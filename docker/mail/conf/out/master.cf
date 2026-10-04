@@ -1,0 +1,56 @@
+# ============================================================================
+#  master.cf роли «out» — внутренний отправитель.
+#
+#  Отличий от стандартного файла Debian ровно три, и все три существенны:
+#
+#  1. chroot = n У ВСЕХ СЛУЖБ. В контейнере chroot вреден: postfix пришлось бы
+#     держать копии /etc/resolv.conf, /etc/services и корневых сертификатов
+#     внутри /var/spool/postfix, а resolv.conf в docker подменяется на лету
+#     (встроенный резолвер 127.0.0.11). Со стандартным chroot=y postfix
+#     перестаёт разрешать MX ЧЕРЕЗ НЕСКОЛЬКО МИНУТ после старта — ровно тогда,
+#     когда docker обновит файл, а копия внутри chroot останется старой.
+#     Изоляция при этом ничего не даёт: контейнер и так изолирован.
+#
+#  2. Нет службы submission и нет postscreen. Здесь некому подключаться,
+#     кроме API из соседнего контейнера.
+#
+#  3. Есть postlog — он обязателен при maillog_file (журнал в stdout).
+#
+#  Колонки:
+#  service     type    private unpriv  chroot  wakeup  maxproc command + args
+#                      (yes)   (yes)   (no)    (never) (100)
+# ============================================================================
+
+# Приём от API. Слушает 25 внутри сети compose; наружу порт не публикуется.
+smtp      inet  n       -       n       -       -       smtpd
+
+# --- Внутренняя кухня postfix -----------------------------------------------
+
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       n       -       -       smtp
+relay     unix  -       -       n       -       -       smtp
+showq     unix  n       -       n       -       -       showq
+error     unix  -       -       n       -       -       error
+retry     unix  -       -       n       -       -       error
+discard   unix  -       -       n       -       -       discard
+local     unix  -       n       n       -       -       local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       n       -       -       lmtp
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+
+# Обязателен при maillog_file = /dev/stdout: именно postlogd собирает записи
+# от всех процессов postfix и пишет их в указанный файл. Без этой строки
+# журнала не будет вовсе, а postfix об этом не скажет.
+postlog   unix-dgram n  -       n       -       1       postlogd

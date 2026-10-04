@@ -1,0 +1,231 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* Продукт тёмный по решению владельца: светлой темы нет. Цветовые схемы —
+   тёмные варианты: «лайм» на :root по умолчанию и «лаванда» через
+   html[data-theme] (выбирается в «Внешнем виде», lib/ui/preferences.ts).
+   Селектор атрибута, а не только :root: превью в настройках ставит
+   data-theme на свой блок и показывает схему, не переключая всю страницу.
+   Вариант dark оставлен рабочим ради компонентов shadcn с классами dark:*. */
+@custom-variant dark (&:is(.dark *));
+
+:root,
+[data-theme='lime'] {
+  --radius: 0.625rem;
+
+  --background: #08090c;
+  --foreground: #eef1f4;
+
+  --card: #11151b;
+  --card-foreground: #eef1f4;
+  --popover: #11151b;
+  --popover-foreground: #eef1f4;
+
+  /* Кислотный лайм читается только с тёмным текстом:
+     белый на #afff01 даёт контраст ~1.4:1 и нечитаем. */
+  --primary: #afff01;
+  --primary-foreground: #08090c;
+
+  --secondary: #1a2029;
+  --secondary-foreground: #eef1f4;
+  --muted: #171c24;
+  --muted-foreground: #8a95a5;
+  --accent: #1c232d;
+  --accent-foreground: #eef1f4;
+
+  --destructive: #ff5a5f;
+  --destructive-foreground: #08090c;
+
+  --border: #232b36;
+  --input: #2a323e;
+  --ring: #afff01;
+
+  --chart-1: #afff01;
+  --chart-2: #4fd1c5;
+  --chart-3: #7aa2ff;
+  --chart-4: #c77dff;
+  --chart-5: #ffb020;
+
+  --sidebar: #11151b;
+  --sidebar-foreground: #eef1f4;
+  --sidebar-primary: #afff01;
+  --sidebar-primary-foreground: #08090c;
+  --sidebar-accent: #1c232d;
+  --sidebar-accent-foreground: #eef1f4;
+  --sidebar-border: #232b36;
+  --sidebar-ring: #afff01;
+}
+
+/* Мягкая лаванда на фиолетово-чёрном фоне. */
+[data-theme='lavender'] {
+  --background: #0e0c15;
+  --foreground: #ece8f6;
+
+  --card: #16131f;
+  --card-foreground: #ece8f6;
+  --popover: #16131f;
+  --popover-foreground: #ece8f6;
+
+  --primary: #b9a4f4;
+  --primary-foreground: #160f29;
+
+  --secondary: #1f1a2c;
+  --secondary-foreground: #ece8f6;
+  --muted: #1a1625;
+  --muted-foreground: #9c94b4;
+  --accent: #241e33;
+  --accent-foreground: #ece8f6;
+
+  --destructive: #ff6b8b;
+  --destructive-foreground: #160f29;
+
+  --border: #2b2440;
+  --input: #352d4d;
+  --ring: #b9a4f4;
+
+  --chart-1: #b9a4f4;
+  --chart-2: #f0a6e8;
+  --chart-3: #8fb4ff;
+  --chart-4: #7fd8c9;
+  --chart-5: #ffc46b;
+
+  --sidebar: #16131f;
+  --sidebar-foreground: #ece8f6;
+  --sidebar-primary: #b9a4f4;
+  --sidebar-primary-foreground: #160f29;
+  --sidebar-accent: #241e33;
+  --sidebar-accent-foreground: #ece8f6;
+  --sidebar-border: #2b2440;
+  --sidebar-ring: #b9a4f4;
+}
+
+@theme inline {
+  /* Системный стек: свой шрифт не грузим — в бою фронт может стоять в контуре
+     без доступа к внешним CDN, а отсутствующий шрифт ломает метрики. */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'Noto Sans', sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono',
+    monospace;
+
+  /* Базовый размер 15px при интерлиньяже 24px — задан владельцем. */
+  --text-base: 15px;
+  --text-base--line-height: 24px;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  html {
+    @apply overflow-x-hidden;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-svh w-full bg-background font-sans text-foreground;
+    /* Базовый кегль задан на body, а не на html: html { font-size } сдвинул бы
+       rem и вместе с ним всю сетку отступов Tailwind. */
+    font-size: 15px;
+    line-height: 24px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Radix при открытии модалки вешает scroll-lock на body и ломает sticky-шапку. */
+  body[data-scroll-locked] {
+    overflow: unset !important;
+  }
+
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* iOS зумит страницу при фокусе на поле мельче 16px. */
+  @media screen and (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+}
+
+@utility no-scrollbar {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Анимация Collapsible в боковом меню. */
+.CollapsibleContent {
+  overflow: hidden;
+}
+.CollapsibleContent[data-state='open'] {
+  animation: slideDown 300ms ease-out;
+}
+.CollapsibleContent[data-state='closed'] {
+  animation: slideUp 300ms ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}

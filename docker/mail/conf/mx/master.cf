@@ -1,0 +1,147 @@
+# ============================================================================
+#  master.cf роли «mx» — публичный приёмник.
+#
+#  Два входа наружу:
+#    25  — postscreen → smtpd. Без SASL. Только для чужих MX, приносящих
+#          почту на наши адреса.
+#    587 — submission: TLS обязателен, вход по паролю обязателен, отправлять
+#          можно только от своего адреса.
+#
+#  chroot = n у всех служб — по той же причине, что и в роли «out»:
+#  встроенный резолвер docker подменяет /etc/resolv.conf на лету, а копия
+#  внутри chroot остаётся старой, и разрешение MX ломается через несколько
+#  минут после старта.
+#
+#  Колонки:
+#  service     type    private unpriv  chroot  wakeup  maxproc command + args
+#                      (yes)   (yes)   (no)    (never) (100)
+# ============================================================================
+
+# --- Порт 25: postscreen впереди smtpd --------------------------------------
+#
+# maxproc обязан быть 1: postscreen — один процесс, обслуживающий все
+# соединения разом. Именно поэтому он дёшев, и именно поэтому он не smtpd.
+smtp      inet  n       -       n       -       1       postscreen
+
+# Сюда postscreen передаёт клиентов, прошедших тесты. `pass` означает, что
+# соединение передаётся уже открытым, без нового TCP-подключения.
+#
+# smtpd_sasl_auth_enable=no повторяет main.cf НАМЕРЕННО: чтобы правка main.cf
+# «на глазок» не включила AUTH на публичном порту незаметно.
+#
+# ВНИМАНИЕ ПРИ ПРАВКЕ: комментарии между строками -o не ставить. Продолжение
+# записи в master.cf — это строки, начинающиеся с пробела, и разорвать их
+# случайной пустой строкой (без пробела) значит потерять все -o после разрыва.
+# Postfix об этом не скажет: он просто применит настройки из main.cf.
+smtpd     pass  -       -       n       -       -       smtpd
+    -o smtpd_sasl_auth_enable=no
+    -o syslog_name=postfix/mx25
+
+# Нужен postscreen для проверок по DNSBL. Сейчас DNSBL выключен (см. main.cf),
+# служба оставлена, чтобы включение сводилось к трём строкам в main.cf.
+dnsblog   unix  -       -       n       -       0       dnsblog
+
+# Нужен postscreen, чтобы предлагать STARTTLS: сам postscreen TLS не умеет и
+# отдаёт рукопожатие этому процессу. Без tlsproxy STARTTLS на порту 25 просто
+# не появится в ответе на EHLO.
+tlsproxy  unix  -       -       n       -       0       tlsproxy
+
+# --- Порт 587: submission ---------------------------------------------------
+#
+# ВНИМАНИЕ: порт публикуется в compose только когда MAIL_SUBMISSION_BIND
+# выставлен в 0.0.0.0. По умолчанию он привязан к 127.0.0.1 внутри
+# контейнера, то есть недостижим ни из интернета, ни из сети compose.
+# Служба при этом объявлена и настроена — включение сводится к одной
+# переменной в .env.production, заведению пароля и правилу ufw.
+#
+# Нужна для того, чтобы отвечать от имени support@pxcheats.com из стороннего
+# клиента (Gmail, «отправлять как»).
+# Разбор строк -o ниже (комментарии ВЫНЕСЕНЫ СЮДА намеренно: разорвать блок
+# продолжения строкой без ведущего пробела — значит потерять всё, что после
+# разрыва, и postfix об этом не скажет ни слова):
+#
+#   smtpd_tls_security_level=encrypt
+#       `encrypt`, а не `may`: на 587 TLS обязателен всегда. Пароль не должен
+#       уйти открытым текстом даже теоретически.
+#
+#   smtpd_client_restrictions=permit_sasl_authenticated,reject
+#       Разговаривать только с теми, кто предъявил пароль. Всё остальное —
+#       отказ на этапе соединения, без единого байта дальше.
+#
+#   smtpd_helo_restrictions= (пусто)
+#       Проверки HELO здесь не нужны и вредны: почтовые клиенты
+#       представляются как попало (именем ноутбука, IP-литералом), а личность
+#       подтверждена паролем, а не именем в приветствии.
+#
+#   smtpd_sender_restrictions=reject_sender_login_mismatch,...
+#       Ради чего всё и затевалось: вошедший под учёткой support может писать
+#       ТОЛЬКО от адресов, сопоставленных ей в /etc/postfix/sender_login. Без
+#       этого украденный пароль означал бы отправку от noreply@ с нашей
+#       подписью DKIM.
+#
+#   smtpd_recipient_restrictions=reject_non_fqdn_recipient,...
+#       reject_non_fqdn_recipient стоит первым по той же причине, что и в
+#       main.cf: адрес-литерал вида `foo@[127.0.0.1]` относится к ЛОКАЛЬНОМУ
+#       классу адресов (при inet_interfaces = all туда входят адреса
+#       интерфейсов), и без этой проверки он проходит как «наш», принимается
+#       в очередь и превращается в отлуп. Здесь отправитель предъявил пароль
+#       и большой беды не наделает, но правило обязано быть одинаковым на
+#       обоих портах: иначе однажды кто-то скопирует ту строку, где его нет.
+#
+#   smtpd_milters=inet:opendkim:8891 + milter_default_action=tempfail
+#       Здесь письмо действительно наше и его надо подписать (на порту 25
+#       милтера нет намеренно, см. main.cf). tempfail, а не accept:
+#       неподписанное письмо от support@ уедет в спам молча, а отложенное
+#       вернётся отправителю понятной ошибкой.
+#
+#   milter_macro_daemon_name=ORIGINATING
+#       Метка для opendkim: «письмо от своего клиента, подписывай».
+#       Без неё opendkim решает по IP клиента, а клиент здесь — чужой
+#       публичный адрес (серверы Gmail), и подпись не поставится.
+#       ПАРНАЯ НАСТРОЙКА — MacroList в docker/mail/opendkim/opendkim.conf,
+#       и она пока закомментирована. Без неё эта строка безвредна, но и
+#       бесполезна; включать обе вместе на шаге C.
+submission inet n      -       n       -       -       smtpd
+    -o syslog_name=postfix/submission
+    -o smtpd_tls_security_level=encrypt
+    -o smtpd_tls_auth_only=yes
+    -o smtpd_sasl_auth_enable=yes
+    -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+    -o smtpd_helo_restrictions=
+    -o smtpd_sender_restrictions=reject_sender_login_mismatch,permit_sasl_authenticated,reject
+    -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+    -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,permit_sasl_authenticated,reject
+    -o smtpd_data_restrictions=reject_unauth_pipelining
+    -o smtpd_milters=inet:opendkim:8891
+    -o milter_default_action=tempfail
+    -o milter_macro_daemon_name=ORIGINATING
+
+# --- Внутренняя кухня postfix -----------------------------------------------
+
+pickup    unix  n       -       n       60      1       pickup
+cleanup   unix  n       -       n       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       n       1000?   1       tlsmgr
+rewrite   unix  -       -       n       -       -       trivial-rewrite
+bounce    unix  -       -       n       -       0       bounce
+defer     unix  -       -       n       -       0       bounce
+trace     unix  -       -       n       -       0       bounce
+verify    unix  -       -       n       -       1       verify
+flush     unix  n       -       n       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       n       -       -       smtp
+relay     unix  -       -       n       -       -       smtp
+showq     unix  n       -       n       -       -       showq
+error     unix  -       -       n       -       -       error
+retry     unix  -       -       n       -       -       error
+discard   unix  -       -       n       -       -       discard
+local     unix  -       n       n       -       -       local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       n       -       -       lmtp
+# anvil считает пределы на клиента (smtpd_client_*_limit). Без него они
+# молча не работают.
+anvil     unix  -       -       n       -       1       anvil
+scache    unix  -       -       n       -       1       scache
+
+postlog   unix-dgram n  -       n       -       1       postlogd

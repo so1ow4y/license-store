@@ -1,0 +1,47 @@
+# Секреты. В README заявлено, что .env не коммитится — это то место,
+# где обещание выполняется.
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+build/
+.turbo/
+
+# Prisma генерирует клиент в node_modules, но при кастомном output
+# артефакты могут осесть здесь.
+apps/api/prisma/generated/
+
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/
+
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+
+# Локальные дампы и выгрузки БД
+*.dump
+*.sql.gz
+backups/
+
+# Секрет 2FA администратора для скриптов — локальный, в репозиторий не идёт.
+scripts/.admin-2fa
+# Секрет 2FA теперь свой на каждый сервер: .admin-2fa.localhost:3000 и т.п.
+scripts/.admin-2fa.*
+
+# Боевые секреты и пароль администратора — только локально.
+.env.production
+.admin-password
+
+# Ключи подписи писем. В репозиторий не идут.
+.secrets/
+
+# Локальные настройки Claude Code и его превью — на любой глубине
+# (корень, apps/web и т.п.): разрешения и конфиги конкретной машины.
+.claude/
+CLAUDE.local.md

@@ -1,0 +1,18 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.log
+
+# Служебный кеш плагина роутера. src/routeTree.gen.ts, наоборот, коммитится:
+# без него не проходит `tsc -b` на чистой машине.
+.tanstack
+
+# Локальные переопределения окружения; .env.development и .env.production
+# коммитятся намеренно — в них нет секретов, только адрес API.
+.env
+.env.local
+.env.*.local
+
+.idea
+.DS_Store

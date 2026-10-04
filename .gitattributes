@@ -1,0 +1,3 @@
+# The stack runs on Linux (Docker, nginx entrypoint scripts), where CRLF
+# breaks shell scripts. Store and check out every text file with LF.
+* text=auto eol=lf

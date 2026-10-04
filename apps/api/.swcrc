@@ -1,0 +1,36 @@
+{
+  "$schema": "https://swc.rs/schema.json",
+  "sourceMaps": true,
+  "module": {
+    "type": "commonjs"
+  },
+  "jsc": {
+    "target": "es2023",
+    "parser": {
+      "syntax": "typescript",
+      "decorators": true,
+      "dynamicImport": true
+    },
+    "transform": {
+      "legacyDecorator": true,
+      // Без этого SWC не эмитит метаданные типов, и NestJS перестаёт
+      // понимать, что инжектить в конструкторы — DI молча ломается
+      // на этапе запуска с невнятной ошибкой «Nest can't resolve dependencies».
+      "decoratorMetadata": true
+    },
+    "keepClassNames": true,
+    // Алиасы путей: tsc их не переписывает при сборке, SWC — переписывает.
+    // Пути указаны относительно baseUrl.
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@common/*": ["src/common/*"],
+      "@modules/*": ["src/modules/*"]
+    }
+  },
+  "minify": false,
+  // Тесты здесь НЕ исключаются: этот же .swcrc использует плагин vitest,
+  // и исключение спеков означает «не могу обработать файл» при прогоне
+  // тестов. Из продовой сборки они отсекаются через tsconfig.build.json.
+  "exclude": ["node_modules", "dist"]
+}

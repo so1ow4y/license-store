@@ -1,0 +1,246 @@
+# ============================================================================
+#  Локальная инфраструктура платформы лицензирования.
+#
+#    docker compose up -d                       # postgres, redis, s3, mailpit, nginx
+#    docker compose --profile full up -d --build   # + API в контейнере
+# ============================================================================
+
+name: license-platform
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: lp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lp_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-license_platform}
+      # Ускоряет инициализацию, для локалки безопасно.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      TZ: UTC
+      PGTZ: UTC
+    command:
+      # Параметры под локальную разработку. На проде значения другие —
+      # см. docs/DEPLOYMENT.md, когда дойдём до деплоя.
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - random_page_cost=1.1
+      # Логируем всё, что дольше 200 мс — сразу видно кандидатов на индекс.
+      - -c
+      - log_min_duration_statement=200
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lp} -d ${POSTGRES_DB:-license_platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: lp-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:-lp_dev_password}
+      - --maxmemory
+      - 512mb
+      # Кэш и счётчики: вытесняем по LRU, а не падаем с OOM.
+      - --maxmemory-policy
+      - allkeys-lru
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-lp_dev_password}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-совместимое хранилище (RustFS). На проде можно заменить любым S3:
+  # API говорит по чистому S3-протоколу. Бакеты releases и payloads создаёт
+  # сам API при старте; оба приватные.
+  s3:
+    image: rustfs/rustfs:latest
+    container_name: lp-s3
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-lpadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-lp_dev_password}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "${S3_PORT:-9000}:9000"
+      - "${S3_CONSOLE_PORT:-9001}:9001"   # веб-консоль
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Контейнер с API поднимается только по профилю:
+  #   docker compose --profile full up -d
+  #
+  # По умолчанию его нет намеренно. В разработке API запускается нативно
+  # (npm run dev) — горячая перезагрузка за секунду против пересборки
+  # образа на каждую правку. Профиль нужен для проверки того, что
+  # реально поедет на сервер, и для прогона перед деплоем.
+  api:
+    profiles: ["full"]
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: lp-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      APP_PORT: 3000
+      # Внутри docker-сети сервисы доступны по именам и слушают
+      # стандартные порты — смещение в .env касается только публикации
+      # на хост, поэтому строки подключения здесь переопределяются.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lp}:${POSTGRES_PASSWORD:-lp_dev_password}@postgres:5432/${POSTGRES_DB:-license_platform}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-lp_dev_password}@redis:6379/0
+      # Значения по умолчанию — для разработки, но перекрываемые: `environment:`
+      # в compose сильнее `env_file:`, и жёсткое значение здесь молча отменило
+      # бы настройку из .env.production.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://s3:9000}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      # Пул libuv. Argon2 при логине и асинхронное AES-GCM при выдаче
+      # payload'а уходят на ОДИН пул, по умолчанию четырёхпоточный.
+      # Без подъёма всплеск запусков незаметно деградирует вход в систему,
+      # и связь между этими двумя явлениями без метрик по стадиям
+      # не находит никто.
+      UV_THREADPOOL_SIZE: 16
+      # Ограничение кучи V8. Само по себе оно payload не удержит: тела
+      # лежат в Buffer'ах, то есть во внешней памяти, которую этот флаг
+      # не считает. Смысл в другом — промах в расчётах должен давать
+      # управляемый OOM в Node, а не убийство процесса OOM-killer'ом хоста.
+      NODE_OPTIONS: --max-old-space-size=1024
+    # Жёсткий потолок памяти контейнера — единственная граница, которая
+    # видит внешние Buffer'ы. Считается так: база процесса + байтовый
+    # бюджет выдач (PAYLOAD_INFLIGHT_MAX_BYTES) с коэффициентом ~3 на
+    # копию (чанки + concat, шифротекст, буфер сокета) + запас на Argon2.
+    mem_limit: 2g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
+    # Порт наружу не публикуется намеренно: единственный вход — nginx.
+    # Так проксирование и лимиты проверяются в разработке, а не на проде.
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:alpine
+    container_name: lp-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+      # 443 публикуется всегда, но слушает только когда есть сертификат:
+      # без него 25-tls-optional.envsh удаляет tls.conf, и порт просто
+      # никем не занят. Так локальный запуск не требует сертификата,
+      # а боевой не требует правки compose.
+      - "${NGINX_TLS_PORT:-8443}:443"
+    environment:
+      # По умолчанию nginx проксирует на API, запущенный нативно на хосте:
+      # это основной режим разработки. Для профиля full в .env ставится
+      # API_UPSTREAM=api:3000, и трафик идёт в контейнер.
+      #
+      # lp-host, а НЕ host.docker.internal. Docker Desktop пишет для своего
+      # имени ДВЕ записи в /etc/hosts — IPv4 и IPv6:
+      #     192.168.65.254        host.docker.internal
+      #     fdc4:f303:9324::254   host.docker.internal
+      # Глобального IPv6 на eth0 у контейнера нет, но nginx резолвит имя один
+      # раз при старте и заводит peer'а на КАЖДЫЙ адрес. Мёртвый IPv6 попадает
+      # в пул наравне с живым IPv4, и половина коннектов спасается только
+      # прозрачным ретраем — в error.log это выглядит как «connect() failed
+      # (101: Network unreachable)» на каждом втором запросе, а настоящая
+      # ошибка апстрима в таком логе не видна.
+      #
+      # Средствами nginx семейство адресов не отфильтровать: у server нет
+      # параметра «только IPv4», а resolver ... ipv6=off действует лишь на
+      # рантайм-резолв через переменную в proxy_pass, за который платится
+      # потеря keepalive к бэкенду. Поэтому имя своё: host-gateway даёт ровно
+      # одну запись, IPv4, и пул апстрима получается из одного живого peer'а.
+      API_UPSTREAM: ${API_UPSTREAM:-lp-host:3000}
+    volumes:
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      # Общая часть server-блоков: включается и из HTTP, и из HTTPS.
+      - ./docker/nginx/snippets:/etc/nginx/snippets:ro
+      # Сертификаты. Каталога может не быть — тогда HTTPS выключится сам.
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+      # Корень для проверки владения доменом (certbot --webroot).
+      # Собранный фронтенд. Каталог может отсутствовать (фронт не собран) —
+      # тогда nginx отдаст 404 на страницы, но API продолжит работать.
+      - ./apps/web/dist:/usr/share/nginx/html:ro
+      - ./docker/nginx/certbot:/var/www/certbot
+      # Отработает до 20-envsubst-on-templates.sh и подменит имя апстрима на
+      # его IPv4 — иначе мёртвый IPv6-адрес попадает в пул peer'ов, см.
+      # комментарий внутри скрипта.
+      # Объявляет $LP_HTTPS ДО подстановки шаблонов (20-envsubst): от него
+      # зависит, перенаправлять ли HTTP на HTTPS. Файлы подключаются
+      # поимённо, а не каталогом, намеренно — каталог перекрыл бы
+      # собственные скрипты образа, включая саму подстановку.
+      - ./docker/nginx/entrypoint.d/14-tls-detect.envsh:/docker-entrypoint.d/14-tls-detect.envsh:ro
+      - ./docker/nginx/entrypoint.d/16-resolve-upstream.envsh:/docker-entrypoint.d/16-resolve-upstream.envsh:ro
+      # Выключает HTTPS, если сертификата нет: иначе nginx не стартует вовсе.
+      - ./docker/nginx/entrypoint.d/25-tls-optional.envsh:/docker-entrypoint.d/25-tls-optional.envsh:ro
+    extra_hosts:
+      - "lp-host:host-gateway"
+    healthcheck:
+      # Явный 127.0.0.1, а не localhost: имя резолвится в ::1 первым,
+      # и проба зависит от того, слушает ли nginx IPv6.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Ловит всю исходящую почту локально. Веб-интерфейс: http://localhost:8025
+  # Нужен, чтобы проверять письма верификации/антифрода, ничего не отправляя наружу.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: lp-mailpit
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+volumes:
+  postgres_data:
+  redis_data:
+  s3_data:

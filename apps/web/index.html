@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Личный кабинет</title>
+    <meta name="description" content="Личный кабинет: лицензии, устройства, безопасность аккаунта." />
+    <!-- Обе схемы тёмные; цвета совпадают с --background, чтобы пока грузится
+         JS, страница не мигала белым или чужой схемой. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#08090c" />
+    <script>
+      // Схема до загрузки приложения. Ключ — как в lib/ui/preferences.ts.
+      try {
+        if (JSON.parse(localStorage.getItem('lp.ui') || '{}').theme === 'lavender') {
+          document.documentElement.dataset.theme = 'lavender'
+        }
+      } catch (e) {}
+    </script>
+    <style>
+      html,
+      body {
+        background: #08090c;
+      }
+      html[data-theme='lavender'],
+      html[data-theme='lavender'] body {
+        background: #0e0c15;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

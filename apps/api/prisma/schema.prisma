@@ -1,0 +1,1815 @@
+// ============================================================================
+//  License Platform — Data Model
+//  PostgreSQL 17 + Prisma
+//
+//  Соглашения:
+//   * PK — uuid v7 (генерируется в приложении, сортируется по времени → удобно
+//     для индексов и курсорной пагинации).
+//   * Все временные метки — timestamptz, хранятся в UTC.
+//   * Таблицы логов (AuditLog, LoginHistory, AntiFraudEvent) НЕ имеют внешних
+//     ключей на actor/subject: журнал обязан переживать удаление сущности,
+//     на которую он ссылается. Целостность там обеспечивается приложением.
+//   * Денежные суммы — Decimal(12,2), никаких float.
+//   * Мягкое удаление (deletedAt) только там, где оно реально нужно.
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions", "relationJoins"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // Все расширения объявлены здесь и только здесь. Prisma создаёт их в
+  // миграции; init-скрипты Postgres для этого не используются, иначе
+  // migrate видит расширения вне истории миграций и требует reset.
+  extensions = [citext, pgcrypto, pg_trgm, pg_stat_statements]
+}
+
+// ============================================================================
+//  ENUMS
+// ============================================================================
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum OAuthProvider {
+  DISCORD
+  TELEGRAM
+}
+
+enum ActorType {
+  USER
+  ADMIN
+  SYSTEM
+  API_KEY
+}
+
+enum ProductStatus {
+  ACTIVE
+  HIDDEN
+  ARCHIVED
+}
+
+enum ReleaseChannel {
+  STABLE
+  BETA
+}
+
+enum LicenseStatus {
+  PENDING // создана, но ещё не активирована пользователем
+  ACTIVE
+  EXPIRED
+  BLOCKED // заблокирована админом
+  REVOKED // отозвана (возврат средств, чарджбек)
+}
+
+enum HwidEventReason {
+  FIRST_BIND
+  USER_RESET
+  ADMIN_RESET
+  /// Сброс реселлером своему клиенту (суточный лимит у реселлера свой).
+  RESELLER_RESET
+  ADMIN_MANUAL_SET
+  SYSTEM_REVOKE
+}
+
+enum ResellerStatus {
+  /// Продаёт и обслуживает клиентов.
+  ACTIVE
+  /// Новые продажи и продления закрыты, клиенты и уже проданные ключи работают.
+  SUSPENDED
+  /// Сотрудничество закончено: панель только для чтения.
+  CLOSED
+}
+
+enum ResellerTopupStatus {
+  /// Заявка создана: реселлер видит адрес и сумму, ждём перевод и хеш.
+  PENDING
+  /// Реселлер прислал хеш транзакции — ждёт проверки администратором.
+  SUBMITTED
+  /// Администратор подтвердил поступление, баланс пополнен.
+  CONFIRMED
+  /// Администратор не нашёл перевод или сумма не сошлась.
+  REJECTED
+  /// Реселлер отменил заявку до отправки хеша.
+  CANCELLED
+}
+
+enum ResellerTxType {
+  /// Пополнение баланса администратором (реселлер заплатил платформе).
+  TOPUP
+  /// Списание за выпущенные ключи или продление.
+  SALE
+  /// Возврат за отменённый неиспользованный ключ или несостоявшееся продление.
+  REFUND
+  /// Ручная корректировка администратором.
+  ADJUSTMENT
+  /// Начисление бонуса или комиссии администратором.
+  COMMISSION
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  FAILED
+}
+
+enum OrderSource {
+  DIGISELLER
+  MANUAL
+  REGISTRATION_KEY
+  /// Покупка на сайте: ЮKassa или крипта по адресу.
+  WEBSITE
+}
+
+enum PaymentProvider {
+  DIGISELLER
+  MANUAL
+  YOOKASSA
+  /// Перевод криптовалюты на адрес; подтверждает администратор.
+  CRYPTO
+}
+
+/// Способ оплаты внутри провайдера. Для Digiseller крипта — это просто
+/// один из method'ов, а не отдельная сущность.
+enum PaymentMethod {
+  CARD
+  SBP
+  CRYPTO
+  EWALLET
+  MOBILE
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum FileStorage {
+  S3
+  LOCAL
+}
+
+enum NotificationChannel {
+  EMAIL
+  TELEGRAM
+}
+
+/// Область привязки чата к аккаунту. ADMIN выдаётся только обладателю права
+/// licenses.create.any и живёт втрое меньше пользовательской (30 дней против
+/// 90): цена потери телефона у администратора выше.
+///
+/// Область — это НЕ право. Каждая админская команда бота обязана перепроверять
+/// разрешение в момент вызова: иначе снятая роль продолжала бы действовать
+/// в чате до самого истечения привязки, то есть до месяца.
+enum TelegramLinkScope {
+  USER
+  ADMIN
+}
+
+/// Категории подписки на уведомления в Telegram.
+/// SECURITY отключить нельзя — см. TelegramNotificationPref.enabled.
+enum TelegramNotifyCategory {
+  LICENSE
+  EXPIRY
+  SECURITY
+  DEVICE
+  ADMIN
+}
+
+/// Одноразовые токены всех сценариев живут в одной таблице с полем типа:
+/// логика выдачи, проверки, истечения и гашения у них общая, различается
+/// только то, что происходит после успешной проверки.
+enum VerificationTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  EMAIL_CHANGE
+  TWO_FACTOR_CHALLENGE
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum ApiKeyOwnerType {
+  SYSTEM
+  ADMIN
+}
+
+enum AntiFraudType {
+  MASS_LOGIN_ATTEMPTS
+  RATE_LIMIT_EXCEEDED
+  SUSPICIOUS_IP
+  NEW_COUNTRY
+  VPN_PROXY_DETECTED
+  REPLAY_ATTEMPT
+  HWID_CHANGE
+  CONCURRENT_SESSIONS
+  SIGNATURE_MISMATCH
+  IMPOSSIBLE_TRAVEL
+}
+
+enum AntiFraudSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Исход попытки получить payload. Значение пишется на КАЖДУЮ попытку,
+/// дошедшую до проверки лицензии, — отказы здесь ценнее успехов: двести
+/// DENIED_HWID по одной лицензии видно только в этой таблице.
+/// DENIED_NOT_ACTIVATED отделён от DENIED_NOT_BOUND намеренно: «привязки нет»
+/// и «привязка есть, но лицензия так и осталась PENDING» — разные состояния
+/// с разными действиями поддержки, и второе выдачу получать не должно.
+enum PayloadIssueResult {
+  ISSUED
+  DENIED_LICENSE
+  DENIED_HWID
+  DENIED_NOT_BOUND
+  DENIED_NOT_ACTIVATED
+  DENIED_NOT_READY
+  DENIED_UPDATE_REQUIRED
+  DENIED_RATE_LIMIT
+  DENIED_SCOPE
+  DENIED_CAPACITY
+  ERROR_CORRUPT
+  /// Отказ ХРАНИЛИЩА, а не содержимого: объект недоступен, пропал или
+  /// оказался больше потолка §12. Отдельно от ERROR_CORRUPT намеренно —
+  /// «байты разошлись с эталоном» и «хранилище лежит» требуют
+  /// противоположных действий, и складывать их в одну колонку значит
+  /// сделать расследование невозможным ровно в тот момент, когда оно нужно.
+  ERROR_STORAGE
+}
+
+// ============================================================================
+//  IDENTITY & ACCESS
+// ============================================================================
+
+model User {
+  id       String  @id @db.Uuid
+  /// citext → регистронезависимая уникальность без функциональных индексов.
+  email    String? @unique @db.Citext
+  username String  @unique @db.Citext
+
+  /// NULL, если аккаунт создан только через OAuth и пароль не задавался.
+  passwordHash      String?   @map("password_hash")
+  /// Версия параметров Argon2, которыми посчитан хеш. Нужна для прозрачного
+  /// перехеширования при усилении параметров без сброса паролей.
+  passwordVersion   Int       @default(1) @map("password_version")
+  passwordChangedAt DateTime? @map("password_changed_at") @db.Timestamptz(3)
+
+  status          UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(3)
+
+  twoFactorEnabled       Boolean   @default(false) @map("two_factor_enabled")
+  /// TOTP secret в зашифрованном виде (AES-256-GCM, ключ из ENCRYPTION_KEY).
+  twoFactorSecretEnc     String?   @map("two_factor_secret_enc")
+  /// Версия ключа, которым зашифровано поле. Без неё ротация ENCRYPTION_KEY
+  /// требует остановки сервиса и перешифровки всех записей разом; с ней —
+  /// фоновая миграция, читающая старой версией и пишущая новой.
+  twoFactorSecretKeyVer  Int?      @map("two_factor_secret_key_ver")
+  twoFactorConfirmedAt   DateTime? @map("two_factor_confirmed_at") @db.Timestamptz(3)
+  /// Счётчик последнего принятого TOTP-шага (unix / 30). Один и тот же код
+  /// нельзя предъявить дважды: принимаем только шаг строго больше сохранённого.
+  twoFactorLastStep      BigInt?   @map("two_factor_last_step")
+  /// Хеши одноразовых кодов восстановления, по одному на элемент.
+  /// SHA-256, а НЕ Argon2: код — это 64 бита случайности, словарной атаки
+  /// на него не существует, а медленный хеш при проверке десяти кодов дал бы
+  /// около 700 мс на запрос. Argon2 нужен там, где секрет выбирает человек.
+  twoFactorRecoveryCodes String[]  @default([]) @map("two_factor_recovery_codes")
+
+  locale String @default("ru") @db.VarChar(8)
+
+  blockedAt     DateTime? @map("blocked_at") @db.Timestamptz(3)
+  blockedReason String?   @map("blocked_reason")
+  blockedById   String?   @map("blocked_by_id") @db.Uuid
+
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(3)
+  lastLoginIp String?   @map("last_login_ip") @db.Inet
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  oauthAccounts        OAuthAccount[]
+  roles                UserRole[]          @relation("UserRoleUser")
+  sessions             Session[]
+  refreshTokens        RefreshToken[]
+  verificationTokens   VerificationToken[]
+  licenses             License[]           @relation("LicenseOwner")
+  devices              Device[]
+  orders               Order[]
+  notifications        Notification[]
+  apiKeys              ApiKey[]
+  /// Список, а не одна запись: пользователь может активировать несколько
+  /// ключей за время жизни аккаунта — например, докупив второй продукт.
+  usedRegistrationKeys RegistrationKey[]   @relation("RegistrationKeyUser")
+
+  /// Адреса, с которых пользователь работал в системе.
+  ips UserIp[]
+
+  /// Ровно одна привязка на аккаунт. Связь Telegram↔аккаунт держится 1:1
+  /// в обе стороны (@unique на user_id здесь и на telegram_user_id там).
+  /// Вторая привязка вытесняет первую явно, а не сосуществует с ней: иначе
+  /// уведомление о смене пароля продолжало бы уходить в чат, о котором
+  /// владелец аккаунта давно забыл.
+  telegramLink      TelegramLink?
+  /// Список, а не одна запись: код привязки одноразовый и живёт 10 минут,
+  /// за это время пользователь успевает нажать «Подключить» несколько раз.
+  telegramLinkCodes TelegramLinkCode[]
+
+  /// Реселлер, который привёл пользователя (первый активированный ключ
+  /// реселлера). NULL — пришёл сам.
+  resellerId      String?   @map("reseller_id") @db.Uuid
+  reseller        Reseller? @relation("ResellerClients", fields: [resellerId], references: [id], onDelete: SetNull)
+  /// Если пользователь сам реселлер — его карточка.
+  resellerProfile Reseller? @relation("ResellerAccount")
+
+  @@index([resellerId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model OAuthAccount {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  provider         OAuthProvider
+  providerUserId   String        @map("provider_user_id")
+  providerUsername String?       @map("provider_username")
+  /// Сырой профиль от провайдера — пригодится при разборе инцидентов.
+  profile          Json?         @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider])
+  @@map("oauth_accounts")
+}
+
+model Role {
+  id          String  @id @db.Uuid
+  /// super_admin | security_admin | product_admin | support | user
+  slug        String  @unique @db.VarChar(64)
+  name        String  @db.VarChar(128)
+  description String?
+  /// Системные роли нельзя удалить через UI.
+  isSystem    Boolean @default(false) @map("is_system")
+  priority    Int     @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @db.Uuid
+  /// Формат: <domain>.<action>, напр. licenses.create, hwid.reset.any
+  slug        String  @unique @db.VarChar(128)
+  /// Группировка для UI: licenses / users / products / system / ...
+  group       String  @db.VarChar(64)
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  roles RolePermission[]
+
+  @@index([group])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId      String   @map("user_id") @db.Uuid
+  roleId      String   @map("role_id") @db.Uuid
+  user        User     @relation("UserRoleUser", fields: [userId], references: [id], onDelete: Cascade)
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  grantedById String?  @map("granted_by_id") @db.Uuid
+  grantedAt   DateTime @default(now()) @map("granted_at") @db.Timestamptz(3)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+// ============================================================================
+//  SESSIONS & TOKENS
+// ============================================================================
+
+model Session {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  ip            String? @db.Inet
+  userAgent     String? @map("user_agent")
+  /// Заполняется из GeoIP при создании сессии.
+  country       String? @db.VarChar(2)
+  city          String? @db.VarChar(128)
+  /// Человекочитаемая метка: "Chrome / Windows" либо "Launcher 1.4.2".
+  device        String? @db.VarChar(255)
+  /// Версия лаунчера, если сессия создана из него.
+  clientVersion String? @map("client_version") @db.VarChar(32)
+
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastSeenAt   DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokeReason String?   @map("revoke_reason") @db.VarChar(64)
+
+  refreshTokens RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id        String  @id @db.Uuid
+  userId    String  @map("user_id") @db.Uuid
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String  @map("session_id") @db.Uuid
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 от токена. Сам токен в БД не хранится никогда.
+  tokenHash String @unique @map("token_hash") @db.VarChar(64)
+  /// Идентификатор «семьи» токенов при ротации. Повторное использование
+  /// уже потраченного токена → компрометация → гасим всю семью.
+  family    String @map("family") @db.Uuid
+
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt       DateTime? @map("used_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  replacedById String?   @map("replaced_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdIp String?  @map("created_ip") @db.Inet
+
+  @@index([userId])
+  @@index([family])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+/// Одноразовые токены: подтверждение email, сброс пароля, смена адреса,
+/// промежуточный шаг 2FA. Одна таблица на все сценарии — жизненный цикл
+/// у них общий, различается только действие после успешной проверки.
+model VerificationToken {
+  id     String @id @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type VerificationTokenType
+
+  /// SHA-256 от токена. Сам токен уходит в письмо и в БД не попадает.
+  tokenHash String @unique @map("token_hash") @db.VarChar(64)
+
+  /// Целевое значение для сценариев, где токен что-то подтверждает:
+  /// новый email при EMAIL_CHANGE. Для остальных типов NULL.
+  payload Json? @db.JsonB
+
+  /// Короткий TTL: 15 минут для 2FA-challenge, 1 час для сброса пароля,
+  /// 24 часа для подтверждения email.
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  /// Гашение. Проверка всегда идёт условием usedAt IS NULL внутри UPDATE,
+  /// а не отдельным SELECT — иначе токен можно предъявить дважды в гонке.
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+
+  /// Сколько раз пытались предъявить неверный код. Для 2FA-challenge
+  /// после N попыток токен гасится и требуется заново вводить пароль.
+  attempts Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdIp String?  @map("created_ip") @db.Inet
+
+  @@index([userId, type, usedAt])
+  @@index([expiresAt])
+  @@map("verification_tokens")
+}
+
+model ApiKey {
+  id   String @id @db.Uuid
+  name String @db.VarChar(128)
+
+  ownerType  ApiKeyOwnerType @map("owner_type")
+  userId     String?         @map("user_id") @db.Uuid
+  user       User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Первые 8 символов ключа — для отображения и поиска в UI.
+  prefix  String @unique @map("prefix") @db.VarChar(16)
+  /// Argon2id от полного ключа.
+  keyHash String @map("key_hash")
+
+  /// Список permission.slug, доступных этому ключу.
+  scopes      String[] @default([])
+  /// CIDR-маски. Пустой массив = без ограничения по IP.
+  ipWhitelist String[] @default([]) @map("ip_whitelist")
+
+  /// HMAC-секрет для подписи запросов лаунчера (ТЗ п.14, Replay Protection).
+  signingSecretEnc    String? @map("signing_secret_enc")
+  /// Версия ключа шифрования — см. users.two_factor_secret_key_ver.
+  signingSecretKeyVer Int?    @map("signing_secret_key_ver")
+
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+  lastUsedIp String?   @map("last_used_ip") @db.Inet
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([ownerType])
+  @@map("api_keys")
+}
+
+/// Ключ для регистрации по коду (ТЗ п.5) и/или для выдачи лицензии.
+model RegistrationKey {
+  id   String @id @db.Uuid
+  code String @unique @db.VarChar(64)
+
+  /// Если заданы — при активации ключа сразу выдаётся лицензия по этому плану.
+  productId String?      @map("product_id") @db.Uuid
+  product   Product?     @relation(fields: [productId], references: [id], onDelete: SetNull)
+  planId    String?      @map("plan_id") @db.Uuid
+  plan      LicensePlan? @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  createdById  String?   @map("created_by_id") @db.Uuid
+  /// БЕЗ @unique. Уникальность здесь была ошибкой: она защищала не ключ от
+  /// повторного использования (это делает UNIQUE на code вместе с used_at),
+  /// а пользователя от второй покупки по ключу — активировать ключ он мог бы
+  /// ровно один раз за всю жизнь аккаунта.
+  usedByUserId String?   @map("used_by_user_id") @db.Uuid
+  usedByUser   User?     @relation("RegistrationKeyUser", fields: [usedByUserId], references: [id], onDelete: SetNull)
+  usedAt       DateTime? @map("used_at") @db.Timestamptz(3)
+
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// Ключ выпущен реселлером за его баланс.
+  resellerId  String?   @map("reseller_id") @db.Uuid
+  reseller    Reseller? @relation(fields: [resellerId], references: [id], onDelete: SetNull)
+  /// Сколько реселлер заплатил за ключ — столько вернётся при отмене.
+  price       Decimal?  @db.Decimal(12, 2)
+  /// Отменён до активации; деньги вернулись на баланс реселлера.
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+
+  /// Лицензия, выданная этим ключом при активации.
+  license License?
+
+  @@index([usedAt])
+  @@index([usedByUserId])
+  @@index([resellerId, createdAt(sort: Desc)])
+  @@map("registration_keys")
+}
+
+// ============================================================================
+//  PRODUCTS & VERSIONS
+// ============================================================================
+
+model Product {
+  id          String        @id @db.Uuid
+  slug        String        @unique @db.VarChar(64)
+  name        String        @db.VarChar(128)
+  description String?
+  status      ProductStatus @default(ACTIVE)
+  sortOrder   Int           @default(0) @map("sort_order")
+
+  iconFileId String? @map("icon_file_id") @db.Uuid
+  iconFile   File?   @relation("ProductIcon", fields: [iconFileId], references: [id], onDelete: SetNull)
+
+  /// Максимум сбросов HWID пользователем за всё время. NULL → берётся из Settings.
+  maxHwidResets          Int? @map("max_hwid_resets")
+  /// Минимальный интервал между самостоятельными сбросами, в часах.
+  hwidResetCooldownHours Int? @map("hwid_reset_cooldown_hours")
+
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(3)
+
+  versions         ProductVersion[]
+  payloadBuilds    PayloadBuild[]
+  plans            LicensePlan[]
+  licenses         License[]
+  orders           Order[]
+  registrationKeys RegistrationKey[]
+  /// Личные реквизиты оплаты товара (шаблоны живут без productId).
+  paymentProfiles  PaymentProfile[]
+  /// Какими способами и на какие реквизиты принимается оплата за товар.
+  paymentOptions   ProductPaymentOption[]
+
+  @@index([status])
+  @@map("products")
+}
+
+/// Версия продукта = единица обновления. Отдельной таблицы Updates нет:
+/// «обновление» из ТЗ п.12 — это ProductVersion с isPublished = true.
+model ProductVersion {
+  id        String  @id @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  /// Semver: 1.4.2
+  version     String @db.VarChar(32)
+  /// Числовое представление для сравнения «новее/старее» одним индексом:
+  /// major*1_000_000 + minor*1_000 + patch
+  versionCode Int    @map("version_code")
+
+  channel   ReleaseChannel @default(STABLE)
+  /// Markdown.
+  changelog String?
+
+  /// Обязательное обновление — лаунчер откажется работать на старой версии.
+  isMandatory Boolean   @default(false) @map("is_mandatory")
+  isPublished Boolean   @default(false) @map("is_published")
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+
+  fileId String? @map("file_id") @db.Uuid
+  file   File?   @relation("VersionFile", fields: [fileId], references: [id], onDelete: SetNull)
+
+  /// Дублируется из File намеренно: контрольная сумма именно этого релиза
+  /// должна быть неизменяемой, даже если файл потом перезальют.
+  sha256   String? @db.Char(64)
+  fileSize BigInt? @map("file_size")
+
+  /// Минимальная версия лаунчера, способная поставить это обновление.
+  minLauncherVersionCode Int? @map("min_launcher_version_code")
+
+  createdById String   @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  files ProductVersionFile[]
+
+  @@unique([productId, version])
+  @@index([productId, channel, isPublished, versionCode(sort: Desc)])
+  @@map("product_versions")
+}
+
+/// Манифест целостности релиза (ТЗ п.11 «проверка целостности файлов»).
+/// sha256 на архив целиком отвечает на вопрос «скачалось без ошибок»,
+/// но не отвечает на «не подменили ли файл после установки» — для этого
+/// нужна контрольная сумма каждого файла по отдельности.
+model ProductVersionFile {
+  id        String         @id @db.Uuid
+  versionId String         @map("version_id") @db.Uuid
+  version   ProductVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  /// Путь относительно корня установки: bin/launcher.exe, data/config.bin
+  path   String @db.VarChar(512)
+  sha256 String @db.Char(64)
+  size   BigInt
+
+  /// Исполняемые и защищённые файлы проверяются при каждом запуске,
+  /// остальные — только после обновления. Проверка всего дерева на
+  /// каждом старте заметно бьёт по времени запуска.
+  isCritical Boolean @default(false) @map("is_critical")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([versionId, path])
+  @@map("product_version_files")
+}
+
+/// Сборка payload'а (ТЗ §7) — ОТДЕЛЬНАЯ от ProductVersion сущность.
+/// Единственный слот артефакта у версии (fileId) занят дистрибутивом §8, а
+/// publish() версии требует fileId+sha256: на общей строке новый payload
+/// нельзя выкатить, не выпустив новый exe и не заставив всех переустановиться.
+/// Payload и дистрибутив релизятся по независимым осям — это разведено в
+/// модели, а не в комментарии.
+model PayloadBuild {
+  id        String  @id @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  version     String @db.VarChar(32)
+  /// major*1_000_000 + minor*1_000 + patch — та же формула, что у ProductVersion.
+  versionCode Int    @map("version_code")
+  /// Название сборки в хранилище товара (по умолчанию — версия). Только для
+  /// людей: в контракт загрузчика (заголовки и AAD) уходит version.
+  name        String @db.VarChar(64)
+
+  channel ReleaseChannel @default(STABLE)
+
+  fileId String? @map("file_id") @db.Uuid
+  /// Restrict, а не SetNull: у опубликованной сборки потеря ссылки на файл —
+  /// не «нет файла», а авария выдачи, и обнаружиться она должна на удалении,
+  /// а не на горячем пути у каждого пользователя.
+  file   File?   @relation("PayloadFile", fields: [fileId], references: [id], onDelete: Restrict)
+
+  /// Неизменяемый снимок по образцу ProductVersion.sha256: эталон должен
+  /// пережить перезалив объекта. Это хеш ОТКРЫТОГО содержимого — ровно то,
+  /// что уходит в X-Payload-Sha256 и пятым полем в AAD.
+  sha256 String? @db.Char(64)
+  size   BigInt? @map("size_bytes")
+
+  /// Порог совместимости для 426 UPDATE_REQUIRED. NULL → проверки нет.
+  /// Загрузчик по решению владельца ВЕЧНЫЙ, отдельной сущности под сборки exe
+  /// нет, поэтому поле сегодня остаётся инертным: заполнять его до появления
+  /// работающей доставки установщика (§8) значит остановить весь парк без
+  /// выхода из состояния.
+  minLauncherVersionCode Int? @map("min_launcher_version_code")
+
+  isPublished Boolean   @default(false) @map("is_published")
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+
+  createdById String   @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  plans    PlanBuild[]
+  licenses License[]
+
+  @@unique([productId, version])
+  @@unique([productId, name])
+  @@index([productId, channel, isPublished, versionCode(sort: Desc)])
+  @@map("payload_builds")
+}
+
+/// Приём логов с клиента (ТЗ п.11 «отправка логов»).
+/// В БД лежит только метаинформация, сами логи — в S3: они объёмные,
+/// читаются редко и точечно, держать их в Postgres незачем.
+model LauncherLogBatch {
+  id String @id @db.Uuid
+
+  /// Без FK: лог может прийти от клиента, чей аккаунт уже удалён.
+  userId    String? @map("user_id") @db.Uuid
+  licenseId String? @map("license_id") @db.Uuid
+  deviceId  String? @map("device_id") @db.Uuid
+
+  clientVersion String? @map("client_version") @db.VarChar(32)
+  /// crash | error | diagnostic | user_report
+  kind          String  @db.VarChar(32)
+  /// Краткая выжимка для списка в админке, чтобы не тянуть файл из S3.
+  summary       String? @db.VarChar(512)
+
+  fileId    String? @map("file_id") @db.Uuid
+  file      File?   @relation("LauncherLogFile", fields: [fileId], references: [id], onDelete: SetNull)
+  sizeBytes BigInt? @map("size_bytes")
+
+  ip        String?  @db.Inet
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  reviewedAt   DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  reviewedById String?   @map("reviewed_by_id") @db.Uuid
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([kind, createdAt(sort: Desc)])
+  @@index([licenseId])
+  @@map("launcher_log_batches")
+}
+
+/// Журнал выдач payload (ТЗ §7 + п.15 «антифрод»), append-only.
+/// Сегодня после выдачи в базе не остаётся ни строки, а обещание §7.1
+/// («повторно запросить нельзя без валидной подписи и лицензии») верно для
+/// одиночного запроса и никак не мешает шарингу: одна лицензия, двадцать
+/// человек по очереди, у каждого своя валидная сессия. Отличить это от
+/// нормальной работы можно ТОЛЬКО считая выдачи в разрезе лицензии/HWID/IP
+/// за окно, а данных для такого счёта в базе сегодня нет вообще.
+///
+/// Без внешних ключей — по тому же соглашению, что LauncherLogBatch и журналы
+/// из шапки файла: строка обязана пережить удаление лицензии, устройства и
+/// самой сборки. FK на payload_builds означал бы обратное — либо расследование
+/// по удалённой сборке невозможно, либо журнал блокирует её удаление.
+model PayloadIssue {
+  id String @id @db.Uuid
+
+  userId         String? @map("user_id") @db.Uuid
+  licenseId      String? @map("license_id") @db.Uuid
+  deviceId       String? @map("device_id") @db.Uuid
+  productId      String? @map("product_id") @db.Uuid
+  payloadBuildId String? @map("payload_build_id") @db.Uuid
+  /// Снимок номера сборки: строка переживает удаление payload_builds.
+  payloadVersion String? @map("payload_version") @db.VarChar(32)
+
+  /// SHA-256 от Disk ID. НИКОГДА не сырой Disk ID: журнал хранится годами и
+  /// читается людьми, а сырой идентификатор железа — то же по чувствительности,
+  /// что hwid_enc у устройства, только без шифрования.
+  hwidHash String? @map("hwid_hash") @db.Char(64)
+
+  clientVersion String? @map("client_version") @db.VarChar(32)
+  apiKeyId      String? @map("api_key_id") @db.Uuid
+
+  /// Доказательная ценность колонки ровно такая, какой её делает nginx:
+  /// пока X-Forwarded-For не перезаписывается на $remote_addr, значение
+  /// подконтрольно клиенту (см. Д15 в docs/PAYLOAD-DESIGN.md).
+  ip      String? @db.Inet
+  country String? @db.VarChar(2)
+
+  result    PayloadIssueResult
+  sizeBytes BigInt?            @map("size_bytes")
+  requestId String?            @map("request_id") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([licenseId, createdAt(sort: Desc)])
+  @@index([hwidHash, createdAt(sort: Desc)])
+  @@index([ip, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([result, createdAt(sort: Desc)])
+  @@map("payload_issues")
+}
+
+/// Тариф. Заменяет хардкод «1/7/30/90/180/lifetime» — сроки задаются данными,
+/// а digisellerProductId связывает тариф с товаром на площадке.
+model LicensePlan {
+  id        String  @id @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  slug         String @db.VarChar(64)
+  name         String @db.VarChar(128)
+  /// NULL = Lifetime.
+  durationDays Int?   @map("duration_days")
+
+  price    Decimal @default(0) @db.Decimal(12, 2)
+  currency String  @default("RUB") @db.VarChar(3)
+
+  /// ID товара в Digiseller. Уникален, если задан.
+  digisellerProductId Int? @unique @map("digiseller_product_id")
+
+  isActive  Boolean @default(true) @map("is_active")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  licenses         License[]
+  orders           Order[]
+  registrationKeys RegistrationKey[]
+  /// Сборки тарифа: загрузчик получает самую новую опубликованную из них.
+  builds           PlanBuild[]
+
+  @@unique([productId, slug])
+  @@index([isActive])
+  @@map("license_plans")
+}
+
+/// Сборка, прикреплённая к тарифу. Без прикреплённых сборок тариф получает
+/// самую новую опубликованную сборку товара.
+model PlanBuild {
+  planId    String       @map("plan_id") @db.Uuid
+  plan      LicensePlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  buildId   String       @map("build_id") @db.Uuid
+  build     PayloadBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([planId, buildId])
+  @@index([buildId])
+  @@map("plan_builds")
+}
+
+// ============================================================================
+//  LICENSES, DEVICES, HWID
+// ============================================================================
+
+model License {
+  id  String @id @db.Uuid
+  /// Человекочитаемый ключ вида FC26-XXXX-XXXX-XXXX-XXXX.
+  key String @unique @db.VarChar(64)
+
+  userId String? @map("user_id") @db.Uuid
+  user   User?   @relation("LicenseOwner", fields: [userId], references: [id], onDelete: SetNull)
+
+  productId String      @map("product_id") @db.Uuid
+  product   Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  planId    String      @map("plan_id") @db.Uuid
+  plan      LicensePlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  status LicenseStatus @default(PENDING)
+
+  issuedAt    DateTime  @default(now()) @map("issued_at") @db.Timestamptz(3)
+  activatedAt DateTime? @map("activated_at") @db.Timestamptz(3)
+  /// NULL = Lifetime.
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(3)
+
+  blockedAt     DateTime? @map("blocked_at") @db.Timestamptz(3)
+  blockedReason String?   @map("blocked_reason")
+  blockedById   String?   @map("blocked_by_id") @db.Uuid
+
+  /// Отзыв — не то же самое, что блокировка. Блокирует админ за нарушение,
+  /// отзывает система при возврате средств или отмене сделки площадкой.
+  /// Разбор чарджбека без даты и причины отзыва превращается в гадание.
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(3)
+  revokedReason String?   @map("revoked_reason")
+
+  /// Текущая привязка. NULL — лицензия ещё ни разу не запускалась.
+  currentDeviceId String? @unique @map("current_device_id") @db.Uuid
+  currentDevice   Device? @relation("LicenseCurrentDevice", fields: [currentDeviceId], references: [id], onDelete: SetNull)
+
+  hwidResetCount  Int       @default(0) @map("hwid_reset_count")
+  lastHwidResetAt DateTime? @map("last_hwid_reset_at") @db.Timestamptz(3)
+
+  lastCheckAt       DateTime? @map("last_check_at") @db.Timestamptz(3)
+  lastCheckIp       String?   @map("last_check_ip") @db.Inet
+  lastCheckCountry  String?   @map("last_check_country") @db.VarChar(2)
+  lastClientVersion String?   @map("last_client_version") @db.VarChar(32)
+
+  orderId String? @map("order_id") @db.Uuid
+  order   Order?  @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  /// Кто выдал вручную (админ). NULL для автовыдачи.
+  issuedById String? @map("issued_by_id") @db.Uuid
+  notes      String?
+
+  /// Закреплённая сборка: загрузчик получает именно её. NULL — по тарифу.
+  buildId String?       @map("build_id") @db.Uuid
+  build   PayloadBuild? @relation(fields: [buildId], references: [id], onDelete: SetNull)
+
+  /// Реселлер, продавший лицензию (ключом со своего баланса).
+  resellerId String?   @map("reseller_id") @db.Uuid
+  reseller   Reseller? @relation(fields: [resellerId], references: [id], onDelete: SetNull)
+
+  /// Ключ активации, которым получена лицензия: по нему видно, кто ключ
+  /// выпустил (админ или реселлер) и кто и когда его активировал.
+  registrationKeyId String?          @unique @map("registration_key_id") @db.Uuid
+  registrationKey   RegistrationKey? @relation(fields: [registrationKeyId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  devices     Device[]      @relation("LicenseDevices")
+  hwidHistory HwidHistory[]
+
+  @@index([resellerId])
+  @@index([buildId])
+  @@index([userId, status])
+  @@index([productId, status])
+  @@index([status, expiresAt])
+  @@index([expiresAt])
+  @@index([orderId])
+  /// Поиск по части ключа в админке (pg_trgm).
+  @@index([key(ops: raw("gin_trgm_ops"))], type: Gin, map: "licenses_key_trgm")
+  @@map("licenses")
+}
+
+/// Устройство = конкретная машина. HWID = Disk ID (ТЗ п.7), в открытом виде
+/// не хранится и пользователю не показывается.
+model Device {
+  id String @id @db.Uuid
+
+  userId String? @map("user_id") @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  licenseId String?  @map("license_id") @db.Uuid
+  license   License? @relation("LicenseDevices", fields: [licenseId], references: [id], onDelete: Cascade)
+
+  /// HMAC-SHA256(disk_id, HWID_PEPPER). Ищем и сравниваем только по нему.
+  /// Источник disk_id на клиенте — DeviceIoControl с IOCTL_STORAGE_QUERY_PROPERTY,
+  /// то есть серийный номер накопителя: переживает и форматирование раздела,
+  /// и переустановку Windows.
+  hwidHash      String  @map("hwid_hash") @db.Char(64)
+  /// Исходный Disk ID, зашифрованный AES-256-GCM. Нужен админу для ручной
+  /// правки и разбора спорных случаев; в API наружу не отдаётся никогда.
+  hwidEnc       String? @map("hwid_enc")
+  /// Версия ключа шифрования hwid_enc — см. users.two_factor_secret_key_ver.
+  hwidEncKeyVer Int?    @map("hwid_enc_key_ver")
+
+  osInfo            String?  @map("os_info") @db.VarChar(255)
+  firstSeenAt       DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt        DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  lastIp            String?  @map("last_ip") @db.Inet
+  lastCountry       String?  @map("last_country") @db.VarChar(2)
+  lastClientVersion String?  @map("last_client_version") @db.VarChar(32)
+
+  isBlocked     Boolean @default(false) @map("is_blocked")
+  blockedReason String? @map("blocked_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  currentForLicense License? @relation("LicenseCurrentDevice")
+
+  /// Одно устройство на лицензию не заводится дважды.
+  @@unique([licenseId, hwidHash])
+  @@index([hwidHash])
+  @@index([userId])
+  @@index([isBlocked])
+  @@map("devices")
+}
+
+model HwidHistory {
+  id        String  @id @db.Uuid
+  licenseId String  @map("license_id") @db.Uuid
+  license   License @relation(fields: [licenseId], references: [id], onDelete: Cascade)
+
+  reason HwidEventReason
+
+  oldHwidHash String? @map("old_hwid_hash") @db.Char(64)
+  newHwidHash String? @map("new_hwid_hash") @db.Char(64)
+  oldDeviceId String? @map("old_device_id") @db.Uuid
+  newDeviceId String? @map("new_device_id") @db.Uuid
+
+  /// Кто инициировал. Без FK: история должна пережить удаление актора.
+  actorId    String?   @map("actor_id") @db.Uuid
+  actorType  ActorType @map("actor_type")
+  /// Подпись актора на момент действия — как в audit_logs. Иначе через
+  /// полгода в истории сбросов остаётся голый UUID уволенного сотрудника.
+  actorLabel String?   @map("actor_label") @db.VarChar(255)
+
+  ip      String? @db.Inet
+  comment String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([licenseId, createdAt(sort: Desc)])
+  @@index([actorId])
+  @@map("hwid_history")
+}
+
+// ============================================================================
+//  RESELLERS
+// ============================================================================
+
+/// Реселлер — оптовый продавец. Платит платформе вперёд (баланс пополняет
+/// администратор), выпускает со своего баланса ключи активации по цене тарифа
+/// минус свою скидку и продаёт их своим покупателям по своей цене.
+model Reseller {
+  id     String @id @db.Uuid
+  /// Аккаунт, под которым реселлер входит в панель.
+  userId String @unique @map("user_id") @db.Uuid
+  user   User   @relation("ResellerAccount", fields: [userId], references: [id], onDelete: Cascade)
+
+  displayName String         @map("display_name") @db.VarChar(128)
+  status      ResellerStatus @default(ACTIVE)
+
+  /// Баланс в валюте платформы. Списывается при выпуске ключей и продлениях.
+  balance         Decimal @default(0) @db.Decimal(12, 2)
+  currency        String  @default("RUB") @db.VarChar(3)
+  /// Скидка от цены тарифа, %.
+  discountPercent Decimal @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  /// Насколько можно уйти в минус (продажа в долг).
+  creditLimit     Decimal @default(0) @map("credit_limit") @db.Decimal(12, 2)
+
+  /// Пустой массив — разрешены все товары.
+  allowedProductIds   String[] @default([]) @map("allowed_product_ids") @db.Uuid
+  /// Сколько сбросов привязки реселлер может сделать своим клиентам за сутки.
+  hwidResetDailyLimit Int      @default(10) @map("hwid_reset_daily_limit")
+
+  notes String?
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  clients          User[]                @relation("ResellerClients")
+  licenses         License[]
+  registrationKeys RegistrationKey[]
+  transactions     ResellerTransaction[]
+  topups           ResellerTopup[]
+
+  @@index([status])
+  @@map("resellers")
+}
+
+/// Заявка реселлера на пополнение баланса криптой. Как заказ покупателя:
+/// адрес и сумма в монетах → хеш транзакции → подтверждение администратором.
+/// Подтверждение создаёт строку TOPUP в журнале баланса.
+model ResellerTopup {
+  id         String   @id @db.Uuid
+  resellerId String   @map("reseller_id") @db.Uuid
+  reseller   Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  /// Сумма в валюте баланса, которую реселлер хочет зачислить.
+  amount   Decimal @db.Decimal(12, 2)
+  currency String  @default("RUB") @db.VarChar(3)
+
+  /// Реквизиты и кошелёк, на которые выставлена заявка.
+  profileId    String? @map("profile_id") @db.Uuid
+  walletId     String? @map("wallet_id") @db.VarChar(64)
+  /// Что показать реселлеру: адрес, сеть, сумма в монетах, срок.
+  instructions Json    @db.JsonB
+
+  /// Хеш транзакции. Уникален: один перевод не пополнит баланс дважды.
+  txHash String? @unique @map("tx_hash") @db.VarChar(140)
+
+  status ResellerTopupStatus @default(PENDING)
+  /// Сколько фактически зачислено (админ может поправить, если пришло меньше).
+  creditedAmount Decimal? @map("credited_amount") @db.Decimal(12, 2)
+  note           String?
+  rejectReason   String?  @map("reject_reason")
+  reviewedById   String?  @map("reviewed_by_id") @db.Uuid
+  /// Строка TOPUP в журнале баланса, созданная подтверждением.
+  transactionId  String?  @unique @map("transaction_id") @db.Uuid
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(3)
+  submittedAt DateTime? @map("submitted_at") @db.Timestamptz(3)
+  reviewedAt  DateTime? @map("reviewed_at") @db.Timestamptz(3)
+
+  @@index([status, createdAt])
+  @@index([resellerId, createdAt(sort: Desc)])
+  @@map("reseller_topups")
+}
+
+/// Движение по балансу реселлера. Строки не меняются и не удаляются:
+/// это бухгалтерия, по ней сверяются расчёты.
+model ResellerTransaction {
+  id         String   @id @db.Uuid
+  resellerId String   @map("reseller_id") @db.Uuid
+  reseller   Reseller @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+
+  type         ResellerTxType
+  /// Положительная — пополнение, отрицательная — списание.
+  amount       Decimal        @db.Decimal(12, 2)
+  /// Баланс после операции: историю можно сверять без пересчёта всей ленты.
+  balanceAfter Decimal        @map("balance_after") @db.Decimal(12, 2)
+  currency     String         @default("RUB") @db.VarChar(3)
+
+  /// За что: тариф и количество ключей, продлённая лицензия, отменённый ключ.
+  planId            String? @map("plan_id") @db.Uuid
+  quantity          Int?
+  licenseId         String? @map("license_id") @db.Uuid
+  registrationKeyId String? @map("registration_key_id") @db.Uuid
+
+  comment     String?
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([resellerId, createdAt(sort: Desc)])
+  @@index([type])
+  @@map("reseller_transactions")
+}
+
+// ============================================================================
+//  ORDERS & PAYMENTS
+// ============================================================================
+
+model Order {
+  id     String @id @db.Uuid
+  /// Короткий номер для саппорта: ORD-2026-000123.
+  ///
+  /// Генерируется функцией в БД, а не приложением: она уже существует
+  /// (миграция 20260731143000) и стоит DEFAULT'ом на колонке, но без этой
+  /// аннотации Prisma всё равно слала бы своё значение — то есть функция
+  /// была мёртвой. Нумерация в базе, а не в коде, ещё и потому, что при
+  /// нескольких репликах два процесса иначе выдадут один номер.
+  number String @unique @default(dbgenerated("next_order_number()")) @db.VarChar(32)
+
+  userId String? @map("user_id") @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  productId String      @map("product_id") @db.Uuid
+  product   Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  planId    String      @map("plan_id") @db.Uuid
+  plan      LicensePlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  quantity Int     @default(1)
+  amount   Decimal @db.Decimal(12, 2)
+  currency String  @default("RUB") @db.VarChar(3)
+
+  status OrderStatus @default(PENDING)
+  source OrderSource
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  paidAt      DateTime? @map("paid_at") @db.Timestamptz(3)
+  deliveredAt DateTime? @map("delivered_at") @db.Timestamptz(3)
+  cancelledAt DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  refundedAt  DateTime? @map("refunded_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  comment String?
+
+  payments Payment[]
+  licenses License[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([createdAt])
+  /// Разрез «продажи по продуктам за период» — виджет дашборда из ТЗ п.18.
+  @@index([productId, createdAt(sort: Desc)])
+  @@map("orders")
+}
+
+model Payment {
+  id      String @id @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  provider PaymentProvider
+  method   PaymentMethod   @default(OTHER)
+  status   PaymentStatus   @default(PENDING)
+
+  /// Реквизиты, на которые выставлен платёж: по ним же сверяется статус.
+  profileId String?         @map("profile_id") @db.Uuid
+  profile   PaymentProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+
+  amount   Decimal @db.Decimal(12, 2)
+  currency String  @default("RUB") @db.VarChar(3)
+
+  /// ID платежа на стороне провайдера; для крипты — хеш транзакции.
+  /// Уникален в пределах провайдера: одна транзакция не оплатит два заказа.
+  externalId String? @map("external_id") @db.VarChar(128)
+  /// Полный ответ провайдера — единственный источник правды при разборе споров.
+  rawPayload Json?   @map("raw_payload") @db.JsonB
+  /// Что показать покупателю: ссылка на оплату или адрес, сеть и сумма в монетах.
+  instructions Json? @db.JsonB
+
+  /// Покупатель сообщил об оплате (прислал хеш транзакции).
+  submittedAt  DateTime? @map("submitted_at") @db.Timestamptz(3)
+  /// Администратор, подтвердивший или отклонивший оплату вручную.
+  reviewedById String?   @map("reviewed_by_id") @db.Uuid
+  confirmedAt  DateTime? @map("confirmed_at") @db.Timestamptz(3)
+  failedAt     DateTime? @map("failed_at") @db.Timestamptz(3)
+  refundedAt   DateTime? @map("refunded_at") @db.Timestamptz(3)
+  errorMessage String?   @map("error_message")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  digisellerOrder DigisellerOrder?
+
+  @@unique([provider, externalId])
+  @@index([orderId])
+  @@index([status])
+  @@index([provider, status, createdAt])
+  @@index([profileId])
+  @@map("payments")
+}
+
+/// Способ оплаты как канал — одна строка на провайдера: глобальный
+/// выключатель, название на витрине. Для Digiseller здесь же ключи площадки;
+/// реквизиты ЮKassa и крипты живут в payment_profiles.
+model PaymentMethodConfig {
+  provider    PaymentProvider @id
+  enabled     Boolean         @default(false)
+  /// Название на витрине.
+  title       String          @db.VarChar(64)
+  /// Подсказка покупателю под названием.
+  description String?         @db.VarChar(500)
+  sortOrder   Int             @default(0) @map("sort_order")
+  config      Json            @default("{}") @db.JsonB
+
+  secretsEnc    String? @map("secrets_enc")
+  secretsKeyVer Int?    @map("secrets_key_ver")
+
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("payment_methods")
+}
+
+/// Реквизиты оплаты: магазин ЮKassa или набор крипто-кошельков. Без productId —
+/// шаблон, который можно привязать к любому товару; с productId — личные
+/// реквизиты одного товара. Несекретное в config, ключи — в secrets_enc.
+/// Удаление мягкое (archivedAt): по старым платежам статус ещё сверяется.
+model PaymentProfile {
+  id        String          @id @db.Uuid
+  provider  PaymentProvider
+  name      String          @db.VarChar(128)
+  productId String?         @map("product_id") @db.Uuid
+  product   Product?        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  config    Json            @default("{}") @db.JsonB
+
+  secretsEnc    String? @map("secrets_enc")
+  secretsKeyVer Int?    @map("secrets_key_ver")
+
+  createdById String?   @map("created_by_id") @db.Uuid
+  updatedById String?   @map("updated_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz(3)
+
+  productOptions ProductPaymentOption[]
+  payments       Payment[]
+
+  @@index([productId])
+  @@index([provider, archivedAt])
+  @@map("payment_profiles")
+}
+
+/// Реквизиты, привязанные к товару. Одного способа может быть сколько угодно:
+/// два крипто-кошелька — две строки, и покупатель выбирает, куда платить.
+/// provider дублирует реквизиты ради выборки «способы товара» без JOIN.
+model ProductPaymentOption {
+  productId String          @map("product_id") @db.Uuid
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  provider  PaymentProvider
+  profileId String          @map("profile_id") @db.Uuid
+  profile   PaymentProfile  @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  enabled   Boolean         @default(true)
+  /// Порядок на витрине внутри способа.
+  sortOrder Int             @default(0) @map("sort_order")
+
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@id([productId, profileId])
+  @@index([productId, provider])
+  @@index([profileId])
+  @@map("product_payment_options")
+}
+
+/// Сделка на стороне Digiseller.
+///
+/// От двойной выдачи защищают ДВА уникальных индекса, а не один, потому что
+/// путей активации тоже два и предъявляют они разное:
+///   - по уникальному коду с карточки товара — ключ uniqueCode;
+///   - по номеру заказа, когда коды на карточке не включены, — ключ invId.
+/// Во втором случае кода не существует в природе, поэтому uniqueCode NULL-able:
+/// в Postgres NULL не конфликтует с NULL, такие строки спокойно живут рядом,
+/// а их идемпотентность целиком несёт UNIQUE(inv_id). Заполнять колонку
+/// суррогатом вида "inv:298114896" было бы хуже: значение попадает в админский
+/// список и в поддержку, и человек начнёт искать этот «код» у площадки.
+model DigisellerOrder {
+  id String @id @db.Uuid
+
+  paymentId String?  @unique @map("payment_id") @db.Uuid
+  payment   Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  /// Уникальный код покупки, который покупатель вводит у нас.
+  /// NULL — активация прошла по номеру заказа, кода у покупки нет.
+  uniqueCode String? @unique @map("unique_code") @db.VarChar(64)
+  /// Номер счёта Digiseller (inv_id). Для активации по номеру заказа —
+  /// единственный ключ идемпотентности, поэтому индекс обязателен.
+  invId      BigInt? @unique @map("inv_id")
+
+  digisellerProductId Int?     @map("digiseller_product_id")
+  amount              Decimal? @db.Decimal(12, 2)
+  currency            String?  @db.VarChar(3)
+  buyerEmail          String?  @map("buyer_email") @db.VarChar(255)
+
+  /// Ответ Digiseller на проверку кода.
+  rawPayload Json? @map("raw_payload") @db.JsonB
+
+  /// Код проверен через API площадки.
+  verifiedAt       DateTime? @map("verified_at") @db.Timestamptz(3)
+  /// Код погашен — лицензия выдана. Проставляется в той же транзакции.
+  redeemedAt       DateTime? @map("redeemed_at") @db.Timestamptz(3)
+  redeemedByUserId String?   @map("redeemed_by_user_id") @db.Uuid
+  /// Сделка отменена площадкой постфактум → лицензию отзываем.
+  refundedAt       DateTime? @map("refunded_at") @db.Timestamptz(3)
+
+  /// Когда последний раз опрашивали статус сделки.
+  lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([redeemedAt])
+  @@index([lastPolledAt])
+  @@map("digiseller_orders")
+}
+
+// ============================================================================
+//  FILES
+// ============================================================================
+
+model File {
+  id String @id @db.Uuid
+
+  storage   FileStorage @default(S3)
+  bucket    String      @db.VarChar(128)
+  objectKey String      @map("object_key") @db.VarChar(512)
+
+  originalName String @map("original_name") @db.VarChar(255)
+  mimeType     String @map("mime_type") @db.VarChar(128)
+  size         BigInt
+  sha256       String @db.Char(64)
+
+  /// Публичные файлы раздаются напрямую с CDN, приватные — по signed URL.
+  isPublic Boolean @default(false) @map("is_public")
+
+  uploadedById String?   @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  productVersions ProductVersion[]   @relation("VersionFile")
+  payloadBuilds   PayloadBuild[]     @relation("PayloadFile")
+  productIcons    Product[]          @relation("ProductIcon")
+  launcherLogs    LauncherLogBatch[] @relation("LauncherLogFile")
+
+  @@unique([bucket, objectKey])
+  @@index([sha256])
+  @@map("files")
+}
+
+// ============================================================================
+//  NOTIFICATIONS
+// ============================================================================
+
+model Notification {
+  id     String  @id @db.Uuid
+  userId String? @map("user_id") @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  channel NotificationChannel
+  status  NotificationStatus  @default(PENDING)
+
+  /// Куда доставлять: email, Discord user/webhook, Telegram chat_id.
+  /// Обязателен, когда user_id пуст — например, при уведомлении админа
+  /// об антифроде (ТЗ п.15). Для обычных писем заполняется из users.email
+  /// на момент постановки в очередь: адрес мог поменяться после отправки.
+  recipient String? @db.VarChar(255)
+
+  /// Ключ шаблона: license.expiring, hwid.reset, order.delivered, ...
+  templateKey String @map("template_key") @db.VarChar(128)
+  /// Переменные для подстановки в шаблон.
+  payload     Json?  @db.JsonB
+  locale      String @default("ru") @db.VarChar(8)
+
+  /// Отложенная отправка. NULL — «можно прямо сейчас».
+  ///
+  /// Тихие часы Telegram (23:00–08:00 МСК) реализованы именно полем, а не
+  /// проверкой времени в процессоре: без него отложенная строка оставалась бы
+  /// PENDING и перечитывалась бы каждым тиком очереди до самого утра —
+  /// девять часов холостых запросов на каждое ночное уведомление.
+  /// Тем же полем откладывается ретрай после 429 от Telegram.
+  scheduledAt DateTime? @map("scheduled_at") @db.Timestamptz(3)
+
+  /// Отрендеренные значения — сохраняем для истории и повторной отправки.
+  renderedSubject String? @map("rendered_subject") @db.VarChar(512)
+  renderedBody    String? @map("rendered_body")
+
+  attempts     Int       @default(0)
+  sentAt       DateTime? @map("sent_at") @db.Timestamptz(3)
+  readAt       DateTime? @map("read_at") @db.Timestamptz(3)
+  failedAt     DateTime? @map("failed_at") @db.Timestamptz(3)
+  errorMessage String?   @map("error_message")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([userId, readAt])
+  @@index([status, channel])
+  @@index([createdAt])
+  /// Рабочий индекс процессора очереди: он выбирает PENDING по каналу и
+  /// обязан отсекать отложенные строки тем же обращением к индексу.
+  /// Существующего [status, channel] для этого мало — по нему пришлось бы
+  /// поднимать все ночные строки и отбрасывать их фильтром.
+  @@index([channel, status, scheduledAt])
+  @@map("notifications")
+}
+
+model NotificationTemplate {
+  id      String              @id @db.Uuid
+  key     String              @db.VarChar(128)
+  locale  String              @db.VarChar(8)
+  channel NotificationChannel
+
+  subject String? @db.VarChar(512)
+  body    String
+
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([key, locale, channel])
+  @@map("notification_templates")
+}
+
+// ============================================================================
+//  TELEGRAM-БОТ (ТЗ бота §3.5)
+//
+//  Идентификаторы Telegram — BigInt, а не Int: счётчик пользователей уже
+//  перевалил за 2^31, а chat_id супергрупп лежит за этой границей изначально.
+//  Хранить их обычным числом JS нельзя вовсе: после 2^53 значение молча
+//  округлится, и сообщение уйдёт в чужой чат — без ошибки и без следа.
+//
+//  Состояний диалога (FSM) здесь НЕТ намеренно: они живут в Redis
+//  (tg:state:<chatId>) и обязаны протухать сами. Строка в БД «ждём код
+//  Digiseller» пережила бы и рестарт, и уход пользователя, и через неделю
+//  приняла бы случайное сообщение за код активации.
+//
+//  Текстов обращений в поддержку здесь тоже нет: переписка живёт только
+//  в админ-чате Telegram. Хранить её у себя — значит завести вторую копию
+//  персональных данных без единого сценария, которому она нужна.
+// ============================================================================
+
+model TelegramLink {
+  id     String @id @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Числовой id пользователя Telegram — единственный идентификатор связи.
+  telegramUserId BigInt @unique @map("telegram_user_id")
+  /// Куда доставлять сообщения. Для приватного чата совпадает с
+  /// telegramUserId, но хранится отдельно: это разные сущности Bot API,
+  /// и совпадение — их сегодняшняя деталь, а не гарантия протокола.
+  chatId         BigInt @map("chat_id")
+
+  /// Кэш @username ТОЛЬКО для показа администратору. Идентификатором быть
+  /// не может: владелец меняет username в любой момент, а освободившийся
+  /// достаётся другому человеку — привязка по нему увела бы чужой аккаунт.
+  /// Nullable: у пользователя Telegram username может отсутствовать вовсе.
+  username String? @db.VarChar(64)
+
+  /// VarChar(8), а не (5) из §3.5 ТЗ: согласовано с users.locale. Иначе
+  /// 'ru-RU' влезал бы в одно поле и обрезался в другом, и язык бота
+  /// расходился бы с языком писем.
+  locale String            @default("ru") @db.VarChar(8)
+  scope  TelegramLinkScope @default(USER)
+
+  /// Пользователь нажал «Заблокировать бота» (403 от Bot API). Это НЕ отвязка:
+  /// связь цела, доставка временно невозможна. Снимается первым же входящим
+  /// апдейтом из этого чата.
+  chatBlocked Boolean @default(false) @map("chat_blocked")
+
+  linkedAt   DateTime @default(now()) @map("linked_at") @db.Timestamptz(3)
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+
+  /// Срок привязки: 90 дней для USER, 30 для ADMIN. Молчаливого продления
+  /// нет намеренно — второй канал доступа не должен тихо жить вечно после
+  /// того, как о нём забыли.
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz(3)
+  /// Отвязка — мягкая: строка остаётся, чтобы 'evicted' и 'expired' можно
+  /// было отличить при разборе жалобы «бот перестал писать».
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  /// user_request | site_request | evicted | expired | chat_not_found | blocked
+  revokeReason String?   @map("revoke_reason") @db.VarChar(64)
+
+  prefs TelegramNotificationPref[]
+
+  @@index([chatId])
+  @@index([revokedAt])
+  @@map("telegram_links")
+}
+
+/// Одноразовый код привязки: сайт выдаёт его аутентифицированному
+/// пользователю, бот гасит при первом же /start <token>.
+model TelegramLinkCode {
+  id String @id @db.Uuid
+
+  /// SHA-256 hex от токена. Сам токен в БД не попадает никогда — то же
+  /// правило, что у RefreshToken.tokenHash и VerificationToken.tokenHash.
+  ///
+  /// ПОЧЕМУ ХЕШ, А НЕ ЗНАЧЕНИЕ: этот токен — предъявительский документ.
+  /// Кто его знает, тот и привяжет свой чат к чужому аккаунту, получив
+  /// список лицензий, право сбрасывать HWID и показывать ключи. Храни мы
+  /// значение — дамп базы, реплика для аналитики или утёкший бэкап
+  /// становились бы готовым списком действующих отмычек, причём владельцы
+  /// аккаунтов об этом даже не узнали бы. С хешем проверка идёт сравнением
+  /// sha256(предъявленного) с колонкой, а восстановить из хеша 32 байта
+  /// CSPRNG нечем: словаря для случайного секрета не существует, поэтому
+  /// быстрый SHA-256 здесь уместен, а Argon2 не нужен (он для секретов,
+  /// которые выбирает человек).
+  /// VarChar(64) — ровно длина hex-представления SHA-256.
+  codeHash String @unique @map("code_hash") @db.VarChar(64)
+
+  userId String @map("user_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Область запрашивается в момент выпуска и проверяется тогда же: право
+  /// могли снять между выпуском кода и нажатием Start.
+  scope TelegramLinkScope @default(USER)
+
+  /// 10 минут от выпуска. Короткий срок — плата за то, что токен уезжает
+  /// в буфер обмена и в историю переписки Telegram.
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  /// Гашение выполняется ТОЛЬКО внутри UPDATE ... WHERE used_at IS NULL,
+  /// никогда отдельным SELECT: иначе два быстрых нажатия Start проходят
+  /// проверку одновременно и создают две привязки по одному коду.
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+
+  /// @db.Inet, а не VarChar(45) из §3.5 ТЗ: так объявлены все девять
+  /// IP-колонок схемы, и тип отвергает мусор на границе БД, а не после.
+  createdIp String?  @map("created_ip") @db.Inet
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("telegram_link_codes")
+}
+
+model TelegramNotificationPref {
+  linkId   String                 @map("link_id") @db.Uuid
+  link     TelegramLink           @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  category TelegramNotifyCategory
+
+  /// SECURITY выключить нельзя, но запрет живёт в коде, а не в схеме:
+  /// CHECK-ограничение пришлось бы снимать миграцией в тот день, когда
+  /// категория перестанет быть обязательной. Письма настройками бота
+  /// не управляются вовсе — почта остаётся независимым якорем тревоги.
+  enabled Boolean @default(true)
+
+  /// Каскад от привязки: настройки принадлежат чату, а не аккаунту.
+  /// Пережить отвязку им незачем — при новой привязке набор создаётся заново.
+  @@id([linkId, category])
+  @@map("telegram_notification_prefs")
+}
+
+/// Обращение в поддержку из бота. Текста здесь нет — он живёт только
+/// в админ-чате (решение A7). Тут лишь координаты, по которым ответ
+/// администратора реплаем находит адресата.
+model TelegramSupportThread {
+  id String @id @db.Uuid
+
+  /// Человекочитаемый номер — единственное, что пользователь и админ
+  /// называют вслух. Отдельно от uuid: «обращение №417» в переписке
+  /// работает, «обращение 0198f3c1-…» — нет.
+  ticketNo Int @unique @default(autoincrement()) @map("ticket_no")
+
+  /// БЕЗ внешних ключей — по соглашению журналов (см. шапку схемы).
+  /// Привязка отзывается и пересоздаётся каждые 90 дней, а каскад от неё
+  /// стирал бы историю обращений вместе с номерами, на которые ссылаются
+  /// и пользователь, и админ-чат.
+  linkId String @map("link_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// Координаты сообщения в админ-чате: ответ администратора реплаем ищется
+  /// по этой паре. message_id — BigInt по той же причине, что и chat_id.
+  adminChatId    BigInt @map("admin_chat_id")
+  adminMessageId BigInt @map("admin_message_id")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  closedAt  DateTime? @map("closed_at") @db.Timestamptz(3)
+
+  @@index([adminChatId, adminMessageId])
+  @@map("telegram_support_threads")
+}
+
+// ============================================================================
+//  ЖУРНАЛЫ (партиционируются по месяцам — см. prisma/sql/01_partitioning.sql)
+// ============================================================================
+
+/// ВНИМАНИЕ: физически партиционированная таблица. PK — составной (id, created_at),
+/// потому что Postgres требует включения ключа партиционирования в PK.
+model LoginHistory {
+  id String @db.Uuid
+
+  /// Без FK: журнал переживает удаление пользователя.
+  userId         String? @map("user_id") @db.Uuid
+  /// Что ввели в форму — нужно для разбора брутфорса по несуществующим логинам.
+  identifierUsed String? @map("identifier_used") @db.VarChar(255)
+
+  success       Boolean
+  /// invalid_password | user_not_found | blocked | 2fa_failed | rate_limited | ...
+  failureReason String? @map("failure_reason") @db.VarChar(64)
+  /// password | discord | telegram | refresh | api_key
+  method        String  @db.VarChar(32)
+
+  ip        String? @db.Inet
+  country   String? @db.VarChar(2)
+  city      String? @db.VarChar(128)
+  asn       Int?
+  isVpn     Boolean @default(false) @map("is_vpn")
+  userAgent String? @map("user_agent")
+
+  clientVersion String? @map("client_version") @db.VarChar(32)
+  deviceId      String? @map("device_id") @db.Uuid
+  sessionId     String? @map("session_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([id, createdAt])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([ip, createdAt(sort: Desc)])
+  @@index([success, createdAt(sort: Desc)])
+  @@map("login_history")
+}
+
+/// Полный аудит системы (ТЗ п.8). Тоже партиционируется по месяцам.
+model AuditLog {
+  id String @db.Uuid
+
+  actorId    String?   @map("actor_id") @db.Uuid
+  actorType  ActorType @map("actor_type")
+  /// Денормализовано намеренно: в логе должно остаться, КЕМ был актор
+  /// на момент действия, даже если роль потом сменили.
+  actorLabel String?   @map("actor_label") @db.VarChar(255)
+
+  /// license.extend | user.block | hwid.reset | news.publish | file.upload | ...
+  action String @db.VarChar(128)
+
+  entityType String? @map("entity_type") @db.VarChar(64)
+  entityId   String? @map("entity_id") @db.Uuid
+
+  /// Снимки до/после. Секреты вырезаются на уровне интерцептора.
+  before Json? @db.JsonB
+  after  Json? @db.JsonB
+
+  ip        String? @db.Inet
+  userAgent String? @map("user_agent")
+  /// Сквозной ID запроса — связывает запись с логами приложения.
+  requestId String? @map("request_id") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@id([id, createdAt])
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+  @@index([ip, createdAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+/// Адреса, с которых пользователь работал: вход и запросы с действующим
+/// токеном (не чаще раза в 10 минут на пару «пользователь — адрес»).
+model UserIp {
+  userId        String   @map("user_id") @db.Uuid
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ip            String   @db.Inet
+  firstSeenAt   DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(3)
+  lastSeenAt    DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(3)
+  hits          Int      @default(1)
+  lastUserAgent String?  @map("last_user_agent")
+
+  @@id([userId, ip])
+  @@index([ip])
+  @@index([lastSeenAt])
+  @@map("user_ips")
+}
+
+/// Блокировка адреса или подсети: запросы с них отклоняются до аутентификации.
+model IpBlock {
+  id          String    @id @db.Uuid
+  /// Нормализованная запись CIDR: 203.0.113.7/32, 2001:db8::/48.
+  cidr        String    @unique @db.VarChar(64)
+  reason      String?   @db.VarChar(500)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// NULL — бессрочно.
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@map("ip_blocks")
+}
+
+model AntiFraudEvent {
+  id String @id @db.Uuid
+
+  type     AntiFraudType
+  severity AntiFraudSeverity @default(LOW)
+
+  userId    String? @map("user_id") @db.Uuid
+  licenseId String? @map("license_id") @db.Uuid
+  deviceId  String? @map("device_id") @db.Uuid
+
+  ip      String? @db.Inet
+  country String? @db.VarChar(2)
+  asn     Int?
+
+  /// Детали срабатывания: пороги, счётчики, предыдущие значения.
+  details Json? @db.JsonB
+
+  /// Что система сделала: notified_admin | forced_reauth | blocked | logged_only
+  actionTaken String? @map("action_taken") @db.VarChar(64)
+
+  resolvedAt   DateTime? @map("resolved_at") @db.Timestamptz(3)
+  resolvedById String?   @map("resolved_by_id") @db.Uuid
+  resolution   String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([type, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([severity, resolvedAt])
+  @@index([ip])
+  @@map("anti_fraud_events")
+}
+
+// ============================================================================
+//  SETTINGS & LOCALIZATION
+// ============================================================================
+
+model Setting {
+  id          String  @id @db.Uuid
+  /// security.argon2.memory_kib | digiseller.seller_id | smtp.host | ...
+  key         String  @unique @db.VarChar(128)
+  value       Json    @db.JsonB
+  /// api | security | smtp | telegram | discord | digiseller | limits
+  category    String  @db.VarChar(64)
+  /// Секретные значения шифруются на уровне приложения и не отдаются в API.
+  isSecret    Boolean @default(false) @map("is_secret")
+  description String?
+
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([category])
+  @@map("settings")
+}
