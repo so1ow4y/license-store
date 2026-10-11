@@ -773,6 +773,29 @@ export const ERROR_CODE_MESSAGES: Record<string, ErrorText> = {
   },
   ROLE_REQUIRED: { en: 'A user needs at least one role.', ru: 'Нужна хотя бы одна роль.' },
   ROLE_NOT_FOUND: { en: 'Unknown role. Refresh the page.', ru: 'Неизвестная роль. Обновите страницу.' },
+  ROLE_SYSTEM: {
+    en: 'System roles are managed by the seed. Create your own role based on this one.',
+    ru: 'Системные роли меняет только сид. Создайте свою роль на основе этой.',
+  },
+  ROLE_PRIORITY_INVALID: {
+    en: 'Invalid role level. A role with staff permissions needs level 60 or higher (2FA is mandatory for it).',
+    ru: 'Неверный уровень роли. Роли с правами сотрудника нужен уровень от 60 (для неё обязательна 2FA).',
+  },
+  PERMISSION_NOT_OWNED: {
+    en: 'You can only put permissions you have yourself into a role.',
+    ru: 'В роль можно включать только права, которые есть у вас.',
+  },
+  PERMISSION_NOT_FOUND: { en: 'Unknown permission. Refresh the page.', ru: 'Неизвестное право. Обновите страницу.' },
+
+  // --- Разделы реквизитов ---
+  PROFILE_WRONG_SCOPE: {
+    en: 'These payment details belong to the other section. Move them first.',
+    ru: 'Эти реквизиты из другого раздела. Сначала перенесите их.',
+  },
+  PROFILE_PROVIDER_NOT_FOR_RESELLERS: {
+    en: 'Resellers top up only with crypto — YooKassa stays in the products section.',
+    ru: 'Реселлеры пополняют баланс только криптой — ЮKassa остаётся в разделе товаров.',
+  },
 }
 
 /**

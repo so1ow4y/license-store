@@ -1,15 +1,19 @@
-import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Minus, Plus, Search, X } from 'lucide-react'
+import { queryClient } from '@/lib/api/query-client'
+import { Link } from '@tanstack/react-router'
+import { Ban, ChevronRight, Filter, Minus, Plus, Search, UserRound, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { PERMISSIONS } from '@/lib/auth/permissions'
 import { useSession } from '@/lib/auth/session'
 import { useT } from '@/lib/i18n'
 import { formatDateTime } from '@/lib/format/date'
 import { cn } from '@/lib/utils'
+import { ACTIVE_ROW, CURSOR_ROW, PanelFacts, PanelSection, SidePanel } from '@/components/side-panel'
+import { useListHotkeys } from '@/hooks/use-list-hotkeys'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
@@ -22,21 +26,22 @@ import {
   type BulkResult,
 } from '@/features/admin/bulk'
 import { AdminErrorText } from '@/features/admin/error-text'
+import { TimeRangePicker, useTimeRange, zoomRange } from '@/features/admin/time-range'
 import { useBulkUsers } from '@/features/admin-users/api'
 import {
-  RANGES,
   SEARCH_FIELDS,
   logSearchQueryOptions,
   logStatsQueryOptions,
-  rangeFrom,
   useBulkIpBlock,
+  useCreateIpBlock,
   withTerm,
   type AuditEvent,
   type LogKind,
   type LogStats,
   type LoginEvent,
-  type RangeKey,
 } from './api'
+import { TimeHistogram } from './histogram'
+import { IpContextSection, UserAgentFacts } from './ip-context'
 
 const PAGE = 50
 
@@ -49,14 +54,18 @@ const COLUMN_FILTERS: Record<LogKind, string[]> = {
 /**
  * Обозреватель журнала в духе SIEM: строка запроса «поле:значение», диапазон
  * времени, гистограмма, топ значений по полям (клик — добавить условие,
- * минус — исключить), фильтры в шапке колонок, раскрытие строки.
+ * минус — исключить), фильтры в шапке колонок. Клик по строке открывает
+ * событие в панели справа: все поля, изменения и быстрые действия.
  */
-export function LogExplorer({ kind }: { kind: LogKind }) {
+export function LogExplorer({ kind, initial }: { kind: LogKind; initial?: { q?: string; from?: string; to?: string } }) {
   const t = useT()
-  const [draft, setDraft] = useState('')
-  const [q, setQ] = useState('')
-  const [range, setRange] = useState<RangeKey>('24h')
-  const [from, setFrom] = useState(() => rangeFrom('24h'))
+  const [opened, setOpened] = useState<AuditEvent | LoginEvent | null>(null)
+  const [draft, setDraft] = useState(initial?.q ?? '')
+  const [q, setQ] = useState(initial?.q ?? '')
+  // Переход со сработки или дашборда приносит точный период; иначе — сутки.
+  const time = useTimeRange(initial?.from ? { kind: 'absolute', from: initial.from, to: initial.to } : { kind: 'relative', amount: 24, unit: 'h' }, () => {
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'security', kind] })
+  })
   const [skip, setSkip] = useState(0)
   const [columns, setColumns] = useState<Record<string, string>>({})
   const [columnDraft, setColumnDraft] = useState<Record<string, string>>({})
@@ -70,8 +79,8 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
     .filter(Boolean)
     .join(' ')
 
-  const items = useQuery(logSearchQueryOptions(kind, { q: fullQ, from, skip, take: PAGE }))
-  const stats = useQuery(logStatsQueryOptions(kind, { q: fullQ, from }))
+  const items = useQuery(logSearchQueryOptions(kind, { q: fullQ, ...time.resolved, skip, take: PAGE }))
+  const stats = useQuery(logStatsQueryOptions(kind, { q: fullQ, ...time.resolved }))
 
   // Массовые действия над выбранными строками: адреса и пользователи берутся
   // из строк, которые уже видели (выбор переживает смену страницы).
@@ -94,6 +103,13 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
     }
   }, [rows])
 
+  const cursor = useListHotkeys({
+    ids: (rows ?? []).map((r) => r.id),
+    openedId: opened?.id ?? null,
+    onOpen: (id) => setOpened((rows ?? []).find((r) => r.id === id) ?? null),
+    onClose: () => setOpened(null),
+  })
+
   function picked(key: 'ip' | 'userId'): string[] {
     const values = new Set<string>()
     for (const id of selection.ids) {
@@ -115,11 +131,9 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
     else if (bulkAction === 'blockActors') bulkUsers.mutate({ action: 'block', ids: picked('userId'), reason: input.reason }, done)
   }
 
-  function apply(nextQ: string, nextRange: RangeKey = range) {
+  function apply(nextQ: string) {
     setDraft(nextQ)
     setQ(nextQ)
-    setRange(nextRange)
-    setFrom(rangeFrom(nextRange))
     setSkip(0)
   }
 
@@ -148,18 +162,7 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
               spellCheck={false}
             />
           </div>
-          <Select value={range} onValueChange={(value) => apply(draft, value as RangeKey)}>
-            <SelectTrigger className='w-40'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {RANGES.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {t(`siem.range.${r}`)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <TimeRangePicker state={time} onChange={() => setSkip(0)} />
           <Button type='submit'>{t('common.action.search')}</Button>
           {(q || Object.values(columns).some(Boolean)) && (
             <Button
@@ -196,7 +199,17 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
 
       <div className='grid gap-4 xl:grid-cols-[1fr_18rem]'>
         <div className='min-w-0 space-y-4'>
-          <Histogram stats={stats.data} loading={stats.isPending} withFailures={kind === 'logins'} />
+          <TimeHistogram
+            buckets={stats.data?.histogram}
+            intervalMs={stats.data?.intervalMs}
+            range={time.resolved}
+            loading={stats.isPending}
+            withFailures={kind === 'logins'}
+            onZoom={(from, to) => {
+              time.setRange(zoomRange(from, to))
+              setSkip(0)
+            }}
+          />
 
           <BulkBar selection={selection}>
             {canBlockIps && (
@@ -265,6 +278,9 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
                           onFilter={addTerm}
                           select={canSelect ? <RowCheckbox selection={selection} id={event.id} /> : null}
                           selected={selection.has(event.id)}
+                          active={opened?.id === event.id}
+                          cursor={cursor === event.id}
+                          onOpen={() => setOpened(opened?.id === event.id ? null : event)}
                         />
                       ))
                     : (items.data?.items as LoginEvent[] | undefined)?.map((event) => (
@@ -274,6 +290,9 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
                           onFilter={addTerm}
                           select={canSelect ? <RowCheckbox selection={selection} id={event.id} /> : null}
                           selected={selection.has(event.id)}
+                          active={opened?.id === event.id}
+                          cursor={cursor === event.id}
+                          onOpen={() => setOpened(opened?.id === event.id ? null : event)}
                         />
                       ))}
                 </TableBody>
@@ -314,48 +333,156 @@ export function LogExplorer({ kind }: { kind: LogKind }) {
         error={bulkMutation.error}
         onConfirm={runBulk}
       />
-    </div>
-  )
-}
 
-/* ------------------------------------------------------------------ */
-
-function Histogram({ stats, loading, withFailures }: { stats?: LogStats; loading: boolean; withFailures: boolean }) {
-  const t = useT()
-  if (loading && !stats) return <Skeleton className='h-24 w-full' />
-  const buckets = stats?.histogram ?? []
-  const max = Math.max(1, ...buckets.map((b) => b.count))
-  return (
-    <div className='rounded-md border p-3'>
-      <div className='mb-2 flex items-center justify-between text-xs text-muted-foreground'>
-        <span>{t('siem.histogram')}</span>
-        {stats && <span>{t('siem.interval', { interval: stats.interval })}</span>}
-      </div>
-      {buckets.length === 0 ? (
-        <p className='py-6 text-center text-sm text-muted-foreground'>{t('siem.empty')}</p>
-      ) : (
-        <div className='flex h-20 items-end gap-px'>
-          {buckets.map((bucket) => (
-            <div
-              key={bucket.bucket}
-              title={`${formatDateTime(bucket.bucket)} — ${bucket.count}${withFailures ? ` (${t('siem.failed')}: ${bucket.failed ?? 0})` : ''}`}
-              className='flex min-w-[3px] flex-1 flex-col justify-end'
-              style={{ height: '100%' }}
-            >
-              {withFailures && (bucket.failed ?? 0) > 0 && (
-                <div className='rounded-t-sm bg-destructive/80' style={{ height: `${((bucket.failed ?? 0) / max) * 100}%` }} />
-              )}
-              <div
-                className={cn('bg-primary/70', !(withFailures && (bucket.failed ?? 0) > 0) && 'rounded-t-sm')}
-                style={{ height: `${((bucket.count - (withFailures ? (bucket.failed ?? 0) : 0)) / max) * 100}%` }}
-              />
-            </div>
-          ))}
-        </div>
+      {opened && (
+        <EventPanel
+          kind={kind}
+          event={opened}
+          onClose={() => setOpened(null)}
+          onFilter={(field, value, negate) => addTerm(field, value, negate)}
+        />
       )}
     </div>
   )
 }
+
+/**
+ * Событие журнала в панели справа — как карточка сработки в SIEM: все поля,
+ * что изменилось, и действия по нему: отфильтровать по значению, исключить
+ * его, заблокировать адрес, открыть пользователя.
+ */
+function EventPanel({
+  kind,
+  event,
+  onClose,
+  onFilter,
+}: {
+  kind: LogKind
+  event: AuditEvent | LoginEvent
+  onClose: () => void
+  onFilter: (field: string, value: string, negate?: boolean) => void
+}) {
+  const t = useT()
+  const { can } = useSession()
+  const blockIp = useCreateIpBlock()
+  const audit = kind === 'audit' ? (event as AuditEvent) : null
+  const login = kind === 'logins' ? (event as LoginEvent) : null
+  const userId = audit ? audit.actorId : login!.userId
+  const userLabel = audit ? (audit.actorUsername ?? audit.actorLabel) : (login!.username ?? login!.identifierUsed)
+
+  const filterable = (field: string, value: string | null, children?: ReactNode) =>
+    value ? (
+      <span className='group inline-flex items-center gap-1'>
+        <span className='font-mono text-xs break-all'>{children ?? value}</span>
+        <button type='button' onClick={() => onFilter(field, value)} title={t('siem.include')} className='text-muted-foreground opacity-60 hover:text-primary hover:opacity-100'>
+          <Plus className='size-3.5' />
+        </button>
+        <button type='button' onClick={() => onFilter(field, value, true)} title={t('siem.exclude')} className='text-muted-foreground opacity-60 hover:text-destructive hover:opacity-100'>
+          <Minus className='size-3.5' />
+        </button>
+      </span>
+    ) : (
+      '—'
+    )
+
+  return (
+    <SidePanel
+      open
+      onClose={onClose}
+      title={audit ? audit.action : login!.success ? t('siem.success') : t('siem.failed')}
+      subtitle={formatDateTime(event.createdAt)}
+      badges={
+        audit ? (
+          <Badge variant='outline'>{audit.actorType}</Badge>
+        ) : (
+          <Badge variant={login!.success ? 'outline' : 'destructive'}>{login!.method}</Badge>
+        )
+      }
+    >
+      <div className='flex flex-wrap gap-2'>
+        {event.ip && (
+          <Button size='sm' variant='outline' onClick={() => onFilter('ip', event.ip!)}>
+            <Filter className='size-4' />
+            {t('siem.panel.sameIp')}
+          </Button>
+        )}
+        {userLabel && (
+          <Button size='sm' variant='outline' onClick={() => onFilter(audit ? 'actor' : 'user', userLabel)}>
+            <Filter className='size-4' />
+            {t('siem.panel.sameUser')}
+          </Button>
+        )}
+        {userId && can(PERMISSIONS.USERS_READ_ANY) && (
+          <Button asChild size='sm' variant='outline'>
+            <Link to='/admin/users' search={{ open: userId }}>
+              <UserRound className='size-4' />
+              {t('siem.panel.openUser')}
+            </Link>
+          </Button>
+        )}
+        {event.ip && can(PERMISSIONS.SECURITY_IP_BLOCK) && (
+          <Button
+            size='sm'
+            variant='destructive'
+            disabled={blockIp.isPending}
+            onClick={() =>
+              blockIp.mutate(
+                { value: event.ip!, reason: t('siem.panel.blockReason', { what: audit ? audit.action : (login!.failureReason ?? 'login') }) },
+                { onSuccess: () => toast.success(t('security.blocks.ipDone')) }
+              )
+            }
+          >
+            <Ban className='size-4' />
+            {t('siem.panel.blockIp')}
+          </Button>
+        )}
+      </div>
+      <AdminErrorText error={blockIp.error} />
+
+      <PanelSection title={t('siem.panel.fields')}>
+        {audit ? (
+          <PanelFacts
+            rows={[
+              [t('siem.column.actor'), filterable('actor', userLabel)],
+              [t('siem.column.action'), filterable('action', audit.action)],
+              [t('siem.column.entity'), filterable('entity', audit.entityType)],
+              ['entityId', filterable('entityid', audit.entityId)],
+              [t('siem.column.ip'), filterable('ip', audit.ip)],
+              ['request', filterable('request', audit.requestId)],
+              [t('sec.ua.title'), <UserAgentFacts ua={audit.userAgent} />],
+            ]}
+          />
+        ) : (
+          <PanelFacts
+            rows={[
+              [t('siem.column.user'), filterable('user', userLabel)],
+              [t('siem.column.result'), filterable('result', login!.success ? 'success' : 'failed', login!.success ? t('siem.success') : t('siem.failed'))],
+              [t('siem.column.reason'), filterable('reason', login!.failureReason)],
+              [t('siem.column.ip'), filterable('ip', login!.ip, `${login!.ip ?? ''}${login!.country ? ` · ${login!.country}` : ''}`)],
+              [t('siem.column.method'), filterable('method', login!.method)],
+              ['identifier', login!.identifierUsed ?? '—'],
+              ['client', login!.clientVersion ?? '—'],
+              [t('sec.ua.title'), <UserAgentFacts ua={login!.userAgent} />],
+            ]}
+          />
+        )}
+      </PanelSection>
+
+      {event.ip && <IpContextSection ip={event.ip} />}
+
+      {audit && (audit.before !== null || audit.after !== null) && (
+        <PanelSection title={t('siem.panel.changes')}>
+          <div className='grid gap-2'>
+            <Json label='before' value={audit.before} />
+            <Json label='after' value={audit.after} />
+          </div>
+        </PanelSection>
+      )}
+    </SidePanel>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 
 function Facets({ stats, onFilter }: { stats?: LogStats; onFilter: (field: string, value: string, negate?: boolean) => void }) {
   const t = useT()
@@ -447,19 +574,30 @@ function AuditRow({
   onFilter,
   select,
   selected,
+  active,
+  cursor,
+  onOpen,
 }: {
   event: AuditEvent
   onFilter: (f: string, v: string) => void
   select: ReactNode
   selected: boolean
+  active: boolean
+  cursor: boolean
+  onOpen: () => void
 }) {
-  const [open, setOpen] = useState(false)
   const actor = event.actorUsername ?? event.actorLabel
   return (
-    <Fragment>
-      <TableRow className='cursor-pointer' data-state={selected ? 'selected' : undefined} onClick={() => setOpen(!open)}>
+    <TableRow
+      data-row-id={event.id}
+      className={cn('cursor-pointer', active && ACTIVE_ROW, cursor && CURSOR_ROW)}
+      data-state={selected ? 'selected' : undefined}
+      onClick={onOpen}
+    >
         {select && <TableCell onClick={(e) => e.stopPropagation()}>{select}</TableCell>}
-        <TableCell>{open ? <ChevronDown className='size-4' /> : <ChevronRight className='size-4' />}</TableCell>
+        <TableCell>
+          <ChevronRight className={cn('size-4 text-muted-foreground', active && 'text-primary')} />
+        </TableCell>
         <TableCell className='whitespace-nowrap text-muted-foreground'>{formatDateTime(event.createdAt)}</TableCell>
         <TableCell>
           <Value field='actor' value={actor} onFilter={onFilter} />
@@ -474,26 +612,7 @@ function AuditRow({
         <TableCell className='font-mono text-xs'>
           <Value field='ip' value={event.ip} onFilter={onFilter} />
         </TableCell>
-      </TableRow>
-      {open && (
-        <TableRow className='hover:bg-transparent'>
-          <TableCell colSpan={select ? 7 : 6} className='bg-muted/30'>
-            <Details
-              rows={[
-                ['entityId', event.entityId],
-                ['request', event.requestId],
-                ['userAgent', event.userAgent],
-              ]}
-              onFilter={onFilter}
-            />
-            <div className='mt-2 grid gap-2 md:grid-cols-2'>
-              <Json label='before' value={event.before} />
-              <Json label='after' value={event.after} />
-            </div>
-          </TableCell>
-        </TableRow>
-      )}
-    </Fragment>
+    </TableRow>
   )
 }
 
@@ -518,19 +637,30 @@ function LoginRow({
   onFilter,
   select,
   selected,
+  active,
+  cursor,
+  onOpen,
 }: {
   event: LoginEvent
   onFilter: (f: string, v: string) => void
   select: ReactNode
   selected: boolean
+  active: boolean
+  cursor: boolean
+  onOpen: () => void
 }) {
   const t = useT()
-  const [open, setOpen] = useState(false)
   return (
-    <Fragment>
-      <TableRow className='cursor-pointer' data-state={selected ? 'selected' : undefined} onClick={() => setOpen(!open)}>
+    <TableRow
+      data-row-id={event.id}
+      className={cn('cursor-pointer', active && ACTIVE_ROW, cursor && CURSOR_ROW)}
+      data-state={selected ? 'selected' : undefined}
+      onClick={onOpen}
+    >
         {select && <TableCell onClick={(e) => e.stopPropagation()}>{select}</TableCell>}
-        <TableCell>{open ? <ChevronDown className='size-4' /> : <ChevronRight className='size-4' />}</TableCell>
+        <TableCell>
+          <ChevronRight className={cn('size-4 text-muted-foreground', active && 'text-primary')} />
+        </TableCell>
         <TableCell className='whitespace-nowrap text-muted-foreground'>{formatDateTime(event.createdAt)}</TableCell>
         <TableCell>
           <Value field='user' value={event.username ?? event.identifierUsed} onFilter={onFilter} />
@@ -550,38 +680,7 @@ function LoginRow({
         <TableCell className='text-xs'>
           <Value field='method' value={event.method} onFilter={onFilter} />
         </TableCell>
-      </TableRow>
-      {open && (
-        <TableRow className='hover:bg-transparent'>
-          <TableCell colSpan={select ? 8 : 7} className='bg-muted/30'>
-            <Details
-              rows={[
-                ['identifier', event.identifierUsed],
-                ['userId', event.userId],
-                ['client', event.clientVersion],
-                ['userAgent', event.userAgent],
-              ]}
-              onFilter={onFilter}
-            />
-          </TableCell>
-        </TableRow>
-      )}
-    </Fragment>
-  )
-}
-
-function Details({ rows }: { rows: [string, string | null][]; onFilter: (f: string, v: string) => void }) {
-  return (
-    <dl className='grid gap-x-4 gap-y-1 text-xs sm:grid-cols-[8rem_1fr]'>
-      {rows
-        .filter(([, value]) => value)
-        .map(([label, value]) => (
-          <Fragment key={label}>
-            <dt className='text-muted-foreground'>{label}</dt>
-            <dd className='font-mono break-all'>{value}</dd>
-          </Fragment>
-        ))}
-    </dl>
+    </TableRow>
   )
 }
 

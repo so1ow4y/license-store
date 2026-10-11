@@ -20,10 +20,12 @@ import { AuthModule } from '@modules/auth/auth.module';
 import { HealthModule } from '@modules/health/health.module';
 import { HwidModule } from '@modules/hwid/hwid.module';
 import { BillingModule } from '@modules/billing/billing.module';
+import { DistributionModule } from '@modules/distribution/distribution.module';
 import { LauncherModule } from '@modules/launcher/launcher.module';
 import { LicensesModule } from '@modules/licenses/licenses.module';
 import { ProductsModule } from '@modules/products/products.module';
 import { ResellersModule } from '@modules/resellers/resellers.module';
+import { SecurityCenterModule } from '@modules/security-center/security-center.module';
 import { NotificationsModule } from '@modules/notifications/notifications.module';
 import { TelegramBotModule } from '@modules/telegram-bot/telegram-bot.module';
 
@@ -89,6 +91,8 @@ import { TelegramBotModule } from '@modules/telegram-bot/telegram-bot.module';
     LauncherModule,
     BillingModule,
     AdminModule,
+    SecurityCenterModule,
+    DistributionModule,
     ResellersModule,
 
     // Последним среди доменных: бот — потребитель их сервисов и не

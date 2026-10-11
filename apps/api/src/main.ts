@@ -34,6 +34,7 @@ import { v7 as uuidv7 } from 'uuid';
 import { AppModule } from './app.module';
 import type { Env } from '@common/config/env.schema';
 import { requestContext } from '@common/request-context/request-context';
+import { TrafficPriorityService } from '@common/security/traffic-priority.service';
 
 async function bootstrap(): Promise<void> {
   const adapter = new FastifyAdapter({
@@ -138,8 +139,16 @@ async function bootstrap(): Promise<void> {
       'X-Timestamp',
       'X-Client-Version',
       'Accept-Language',
+      // Пропуск приоритета доверенного пользователя (traffic-priority.service.ts).
+      'X-Priority-Pass',
     ],
   });
+
+  // --- Приоритет трафика -------------------------------------------------
+  // После CORS и helmet: отказ 503 из очереди тоже должен нести их заголовки,
+  // иначе браузер покажет ошибку CORS вместо «сервис перегружен».
+  const traffic = app.get(TrafficPriorityService);
+  adapter.getInstance().addHook('onRequest', (req, reply, done) => traffic.handle(req, reply, done));
 
   // --- Маршрутизация ----------------------------------------------------
   // health вынесен из-под префикса: пробы должны жить по стабильному

@@ -70,7 +70,7 @@ export class ResellerTopupsService {
   /** Кошельки, на которые можно пополнить баланс. */
   async options(userId: string) {
     const reseller = await this.mine(userId);
-    return { currency: reseller.currency, wallets: await this.profiles.topupWallets() };
+    return { currency: reseller.currency, wallets: await this.profiles.topupWallets(reseller.id) };
   }
 
   async create(actor: AuthenticatedUser, dto: CreateTopupDto) {
@@ -88,7 +88,7 @@ export class ResellerTopupsService {
       });
     }
 
-    const target = await this.profiles.topupTarget(dto.walletId);
+    const target = await this.profiles.topupTarget(dto.walletId, reseller.id);
     const amount = D(dto.amount).toDecimalPlaces(2);
     const instructions: CryptoInstructions = {
       kind: 'crypto',
@@ -198,11 +198,10 @@ export class ResellerTopupsService {
   // ---------------------------------------------------------- администратор
 
   async list(dto: ListTopupsDto) {
-    const where: Prisma.ResellerTopupWhereInput = dto.status
-      ? dto.status === 'OPEN'
-        ? { status: { in: OPEN } }
-        : { status: dto.status }
-      : {};
+    const where: Prisma.ResellerTopupWhereInput = {
+      ...(dto.status ? (dto.status === 'OPEN' ? { status: { in: OPEN } } : { status: dto.status }) : {}),
+      ...(dto.resellerId ? { resellerId: dto.resellerId } : {}),
+    };
     const take = dto.take ?? 50;
     const skip = dto.skip ?? 0;
     const [rows, total, awaiting] = await Promise.all([

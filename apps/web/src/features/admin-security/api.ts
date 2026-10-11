@@ -46,6 +46,7 @@ export type LogPage<T> = { items: T[]; total: number; skip: number; take: number
 
 export type LogStats = {
   interval: string
+  intervalMs: number
   histogram: { bucket: string; count: number; failed?: number }[]
   facets: { field: string; values: { value: string; count: number }[] }[]
 }
@@ -93,6 +94,10 @@ export type IpBlock = {
   id: string
   cidr: string
   reason: string | null
+  level: 'APP' | 'EDGE' | 'FIREWALL'
+  ports: number[]
+  source: 'manual' | 'rule'
+  ruleId: string | null
   createdById: string | null
   createdByUsername: string | null
   createdAt: string
@@ -113,7 +118,7 @@ function invalidateBlocks() {
 
 export function useCreateIpBlock() {
   return useMutation({
-    mutationFn: (body: { value: string; reason?: string; expiresInHours?: number }) =>
+    mutationFn: (body: { value: string; reason?: string; expiresInHours?: number; level?: IpBlock['level']; ports?: number[] }) =>
       apiFetch<IpBlock>('/admin/security/ip-blocks', { method: 'POST', body }),
     onSuccess: invalidateBlocks,
   })
@@ -122,7 +127,7 @@ export function useCreateIpBlock() {
 /** Массовая блокировка адресов (до 500 за раз): по одному отказу остальные не отменяются. */
 export function useBulkIpBlock() {
   return useMutation({
-    mutationFn: (body: { values: string[]; reason?: string; expiresInHours?: number }) =>
+    mutationFn: (body: { values: string[]; reason?: string; expiresInHours?: number; level?: IpBlock['level']; ports?: number[] }) =>
       apiFetch<BulkResult>('/admin/security/ip-blocks/bulk', { method: 'POST', body }),
     onSuccess: invalidateBlocks,
   })
@@ -180,20 +185,4 @@ export function withTerm(q: string, field: string, value: string, negate = false
     (part) => part !== term && (negate || !part.toLowerCase().startsWith(`${field.toLowerCase()}:`))
   )
   return [...kept, term].join(' ')
-}
-
-/** Пресеты диапазона времени. */
-export const RANGES = ['15m', '1h', '24h', '7d', '30d', 'all'] as const
-export type RangeKey = (typeof RANGES)[number]
-
-const RANGE_MS: Record<Exclude<RangeKey, 'all'>, number> = {
-  '15m': 15 * 60_000,
-  '1h': 3_600_000,
-  '24h': 24 * 3_600_000,
-  '7d': 7 * 24 * 3_600_000,
-  '30d': 30 * 24 * 3_600_000,
-}
-
-export function rangeFrom(range: RangeKey): string | undefined {
-  return range === 'all' ? undefined : new Date(Date.now() - RANGE_MS[range]).toISOString()
 }

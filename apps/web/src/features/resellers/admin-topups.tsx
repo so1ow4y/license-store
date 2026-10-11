@@ -22,7 +22,10 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { CopyButton } from '@/components/copy-button'
+import { ACTIVE_ROW, CURSOR_ROW, PanelFacts, PanelSection, SidePanel } from '@/components/side-panel'
+import { useListHotkeys } from '@/hooks/use-list-hotkeys'
 import { AdminErrorText } from '@/features/admin/error-text'
 import { FormProblems } from '@/features/admin/form-problems'
 import { isTwoFactorSetupRequired, TwoFactorSetupRequired } from '@/features/admin/two-factor-gate'
@@ -45,24 +48,43 @@ const FILTERS: TopupFilter[] = ['SUBMITTED', 'OPEN', 'CONFIRMED', 'REJECTED', 'C
  * баланс. Подтверждать может обладатель `resellers.topups.confirm`
  * (поддержка, супер-админ); остальным с `resellers.read` — только просмотр.
  */
-export function AdminTopupsPanel() {
+export function AdminTopupsPanel({
+  resellerId,
+  onOpenReseller,
+}: {
+  /** Только заявки этого реселлера — так список встроен в панель реселлера. */
+  resellerId?: string
+  /** Открыть панель реселлера из панели заявки. */
+  onOpenReseller?: (id: string) => void
+} = {}) {
   const t = useT()
   const { can } = useSession()
   const canReview = can(PERMISSIONS.RESELLERS_TOPUPS_CONFIRM)
-  const [status, setStatus] = useState<TopupFilter>('SUBMITTED')
+  const embedded = Boolean(resellerId)
+  const [status, setStatus] = useState<TopupFilter>(embedded ? 'ALL' : 'SUBMITTED')
   const [skip, setSkip] = useState(0)
   const [confirming, setConfirming] = useState<AdminTopup | null>(null)
   const [rejecting, setRejecting] = useState<AdminTopup | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   useEffect(() => setSkip(0), [status])
 
-  const query = useQuery(adminTopupsQueryOptions({ status, skip, take: PAGE }))
-  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
+  const query = useQuery(adminTopupsQueryOptions({ status, skip, take: PAGE, resellerId }))
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
+  const selected = items.find((r) => r.id === selectedId) ?? null
+  // Список внутри карточки реселлера клавишами не управляется — там своя панель.
+  const cursor = useListHotkeys({
+    ids: items.map((r) => r.id),
+    openedId: selectedId,
+    onOpen: setSelectedId,
+    onClose: () => setSelectedId(null),
+    enabled: !embedded,
+  })
+  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
 
   return (
     <div className='space-y-4'>
-      <p className='text-sm text-muted-foreground'>{t('resellers.topups.hint')}</p>
+      {!embedded && <p className='text-sm text-muted-foreground'>{t('resellers.topups.hint')}</p>}
       <div className='flex flex-wrap items-center gap-1'>
         {FILTERS.map((f) => (
           <Button key={f} size='sm' variant={status === f ? 'default' : 'outline'} className='h-7' onClick={() => setStatus(f)}>
@@ -103,7 +125,12 @@ export function AdminTopupsPanel() {
                 const i = r.instructions
                 const explorer = r.txHash && i.explorerTxUrl ? i.explorerTxUrl.replace('{tx}', encodeURIComponent(r.txHash)) : null
                 return (
-                  <TableRow key={r.id}>
+                  <TableRow
+                    key={r.id}
+                    data-row-id={embedded ? undefined : r.id}
+                    className={cn(!embedded && 'cursor-pointer', selectedId === r.id && ACTIVE_ROW, !embedded && cursor === r.id && CURSOR_ROW)}
+                    onClick={embedded ? undefined : () => setSelectedId(r.id)}
+                  >
                     <TableCell className='whitespace-nowrap text-muted-foreground'>
                       {formatDateTime(r.createdAt)}
                       {r.submittedAt && (
@@ -156,7 +183,7 @@ export function AdminTopupsPanel() {
                       </Badge>
                       {r.rejectReason && <span className='block max-w-48 text-xs text-muted-foreground'>{r.rejectReason}</span>}
                     </TableCell>
-                    <TableCell className='text-right whitespace-nowrap'>
+                    <TableCell className='text-right whitespace-nowrap' onClick={(e) => e.stopPropagation()}>
                       {canReview && (r.status === 'SUBMITTED' || r.status === 'PENDING') && (
                         <>
                           <Button size='sm' variant='outline' onClick={() => setConfirming(r)}>
@@ -194,12 +221,137 @@ export function AdminTopupsPanel() {
 
       <ConfirmDialog topup={confirming} onOpenChange={(open) => !open && setConfirming(null)} />
       <RejectDialog topup={rejecting} onOpenChange={(open) => !open && setRejecting(null)} />
+      {!embedded && (
+        <TopupPanel
+          topup={selected}
+          onClose={() => setSelectedId(null)}
+          canReview={canReview}
+          onConfirm={setConfirming}
+          onReject={setRejecting}
+          onOpenReseller={
+            onOpenReseller
+              ? (id) => {
+                  // Одна панель за раз: заявка уступает место реселлеру.
+                  setSelectedId(null)
+                  onOpenReseller(id)
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   )
 }
 
+/** Заявка в правой панели: всё для сверки перевода и решение по ней. */
+function TopupPanel({
+  topup,
+  onClose,
+  canReview,
+  onConfirm,
+  onReject,
+  onOpenReseller,
+}: {
+  topup: AdminTopup | null
+  onClose: () => void
+  canReview: boolean
+  onConfirm: (topup: AdminTopup) => void
+  onReject: (topup: AdminTopup) => void
+  onOpenReseller?: (id: string) => void
+}) {
+  const t = useT()
+  if (!topup) return null
+  const i = topup.instructions
+  const explorer = topup.txHash && i.explorerTxUrl ? i.explorerTxUrl.replace('{tx}', encodeURIComponent(topup.txHash)) : null
+  const open = topup.status === 'SUBMITTED' || topup.status === 'PENDING'
+
+  return (
+    <SidePanel
+      open
+      onClose={onClose}
+      title={formatMoney(topup.amount, topup.currency)}
+      subtitle={t('resellers.topups.panelSubtitle', { name: topup.reseller.displayName, date: formatDateTime(topup.createdAt) })}
+      badges={
+        <Badge variant={TOPUP_VARIANT[topup.status]}>
+          {topup.expired ? t('resellers.topup.status.EXPIRED') : t(`resellers.topup.status.${topup.status}`)}
+        </Badge>
+      }
+    >
+      {canReview && open && (
+        <div className='flex flex-wrap gap-2'>
+          <Button onClick={() => onConfirm(topup)}>
+            <Check className='size-4' />
+            {t('resellers.topups.confirm')}
+          </Button>
+          <Button variant='outline' onClick={() => onReject(topup)}>
+            <X className='size-4' />
+            {t('resellers.topups.reject')}
+          </Button>
+        </div>
+      )}
+      {topup && !topup.txHash && open && <p className='text-sm text-amber-600 dark:text-amber-400'>{t('resellers.topups.noTx')}</p>}
+
+      <PanelSection title={t('resellers.topups.section.payment')}>
+        <PanelFacts
+          rows={[
+            [t('resellers.topups.column.amount'), formatMoney(topup.amount, topup.currency)],
+            [t('resellers.topups.field.coins'), <span className='font-mono font-semibold'>{`${i.amount} ${i.currency}`}</span>],
+            [t('resellers.topups.field.network'), i.network],
+            [
+              t('resellers.topups.field.address'),
+              <span className='inline-flex items-center gap-1 font-mono text-xs break-all'>
+                {i.address}
+                <CopyButton value={i.address} label={t('resellers.topups.field.address')} />
+              </span>,
+            ],
+            [
+              t('resellers.topups.column.tx'),
+              topup.txHash ? (
+                <span className='inline-flex items-center gap-1 font-mono text-xs break-all'>
+                  {topup.txHash}
+                  <CopyButton value={topup.txHash} label='TX' />
+                  {explorer && (
+                    <a href={explorer} target='_blank' rel='noreferrer noopener' className='text-muted-foreground hover:text-foreground'>
+                      <ExternalLink className='size-3.5' />
+                      <span className='sr-only'>{t('resellers.topups.explorer')}</span>
+                    </a>
+                  )}
+                </span>
+              ) : (
+                '—'
+              ),
+            ],
+            [t('resellers.topups.field.expires'), formatDateTime(topup.expiresAt)],
+            [t('resellers.topups.field.submitted'), topup.submittedAt ? formatDateTime(topup.submittedAt) : '—'],
+            [t('resellers.topups.field.reviewed'), topup.reviewedAt ? formatDateTime(topup.reviewedAt) : '—'],
+            ...(topup.creditedAmount !== null
+              ? [[t('resellers.topups.field.credited'), formatMoney(topup.creditedAmount, topup.currency)] as [string, string]]
+              : []),
+            ...(topup.rejectReason ? [[t('resellers.topups.reason'), topup.rejectReason] as [string, string]] : []),
+            ...(topup.note ? [[t('resellers.field.comment'), topup.note] as [string, string]] : []),
+          ]}
+        />
+      </PanelSection>
+
+      <PanelSection title={t('resellers.topups.column.reseller')}>
+        <div className='flex items-center justify-between gap-2 rounded-md border p-3'>
+          <span>
+            <span className='font-medium'>{topup.reseller.displayName}</span>
+            <span className='block text-xs text-muted-foreground'>{topup.reseller.user.username}</span>
+          </span>
+          {onOpenReseller && (
+            <Button size='sm' variant='outline' onClick={() => onOpenReseller(topup.reseller.id)}>
+              {t('resellers.topups.openReseller')}
+            </Button>
+          )}
+        </div>
+      </PanelSection>
+    </SidePanel>
+  )
+}
+
 /** Подтверждение: сумму можно поправить, если пришло не столько, сколько заявлено. */
-function ConfirmDialog({ topup, onOpenChange }: { topup: AdminTopup | null; onOpenChange: (open: boolean) => void }) {
+export function ConfirmDialog({ topup, onOpenChange }: { topup: AdminTopup | null; onOpenChange: (open: boolean) => void }) {
   const t = useT()
   const confirm = useConfirmTopup()
   const [amount, setAmount] = useState('')
@@ -270,7 +422,7 @@ function ConfirmDialog({ topup, onOpenChange }: { topup: AdminTopup | null; onOp
   )
 }
 
-function RejectDialog({ topup, onOpenChange }: { topup: AdminTopup | null; onOpenChange: (open: boolean) => void }) {
+export function RejectDialog({ topup, onOpenChange }: { topup: AdminTopup | null; onOpenChange: (open: boolean) => void }) {
   const t = useT()
   const reject = useRejectTopup()
   const [reason, setReason] = useState('')

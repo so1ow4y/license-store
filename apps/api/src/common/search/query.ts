@@ -261,16 +261,34 @@ export function timeRange(column: Prisma.Sql, range: { from?: Date; to?: Date })
   ];
 }
 
-/** Шаг гистограммы под длину диапазона. */
-export function histogramInterval(from?: Date, to?: Date): string {
-  if (!from) return '1 day';
-  const span = (to ?? new Date()).getTime() - from.getTime();
-  const hour = 3_600_000;
-  if (span <= 3 * hour) return '5 minutes';
-  if (span <= 2 * 24 * hour) return '1 hour';
-  if (span <= 14 * 24 * hour) return '6 hours';
-  if (span <= 90 * 24 * hour) return '1 day';
-  return '7 days';
+const MINUTE = 60_000;
+
+/** Ступени шага гистограммы: от минуты до недели. */
+const HISTOGRAM_STEPS: [label: string, ms: number][] = [
+  ['1 minute', MINUTE],
+  ['5 minutes', 5 * MINUTE],
+  ['10 minutes', 10 * MINUTE],
+  ['30 minutes', 30 * MINUTE],
+  ['1 hour', 60 * MINUTE],
+  ['3 hours', 180 * MINUTE],
+  ['6 hours', 360 * MINUTE],
+  ['12 hours', 720 * MINUTE],
+  ['1 day', 1440 * MINUTE],
+  ['7 days', 7 * 1440 * MINUTE],
+];
+
+/** Сколько столбиков примерно хочется видеть: как в SIEM, около сотни. */
+const HISTOGRAM_TARGET = 90;
+
+/**
+ * Шаг гистограммы под длину диапазона: самый мелкий, при котором столбиков
+ * не больше ~90. Узкий диапазон (выделили кусок графика) дробится до минут.
+ */
+export function histogramStep(from?: Date, to?: Date): { interval: string; intervalMs: number } {
+  if (!from) return { interval: '1 day', intervalMs: 1440 * MINUTE };
+  const span = Math.max(MINUTE, (to ?? new Date()).getTime() - from.getTime());
+  const [interval, intervalMs] = HISTOGRAM_STEPS.find(([, ms]) => span / ms <= HISTOGRAM_TARGET) ?? ['7 days', 7 * 1440 * MINUTE];
+  return { interval, intervalMs };
 }
 
 export function yesNo(value: string): boolean | null {

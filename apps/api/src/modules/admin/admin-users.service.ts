@@ -254,11 +254,12 @@ export class AdminUsersService {
         lastLoginIp: true,
         passwordHash: true,
         oauthAccounts: { select: { provider: true, providerUsername: true, createdAt: true } },
+        resellerProfile: { select: { id: true, displayName: true, status: true } },
       },
     });
     if (!user) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Пользователь не найден' });
 
-    const { passwordHash, oauthAccounts, locale, blockedAt, blockedReason, lastLoginIp, ...rest } = user;
+    const { passwordHash, oauthAccounts, locale, blockedAt, blockedReason, lastLoginIp, resellerProfile, ...rest } = user;
     return {
       ...this.toView(rest),
       locale,
@@ -267,6 +268,8 @@ export class AdminUsersService {
       lastLoginIp,
       hasPassword: Boolean(passwordHash),
       oauth: oauthAccounts,
+      /** Карточка реселлера, если аккаунт продаёт оптом. */
+      reseller: resellerProfile,
     };
   }
 
@@ -406,6 +409,7 @@ export class AdminUsersService {
         name: true,
         description: true,
         priority: true,
+        isSystem: true,
         permissions: { select: { permission: { select: { slug: true } } } },
         _count: { select: { users: true } },
       },

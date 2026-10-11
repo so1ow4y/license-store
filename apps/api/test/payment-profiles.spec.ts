@@ -15,6 +15,8 @@ import type { ChannelInfo, PaymentMethodsService } from '../src/modules/billing/
 
 const PRODUCT = '019fbacc-0000-7000-8000-000000000001';
 const OTHER_PRODUCT = '019fbacc-0000-7000-8000-000000000002';
+const RESELLER = '019fbacc-0000-7000-8000-0000000000a1';
+const OTHER_RESELLER = '019fbacc-0000-7000-8000-0000000000a2';
 const WALLET = { id: 'usdt', currency: 'USDT', network: 'TRC20', address: 'TXyz1234567890abcdefgh', rate: 95, decimals: 2 };
 
 type Row = Record<string, unknown> & { id: string };
@@ -24,6 +26,7 @@ type OptionWhere = { productId?: string; profileId?: string; provider?: string; 
 function makeService(channelsEnabled: Partial<Record<'YOOKASSA' | 'CRYPTO', boolean>> = { YOOKASSA: true, CRYPTO: true }) {
   const profiles: Row[] = [];
   const options: Row[] = [];
+  const resellerOptions: Row[] = [];
   let tick = 0;
 
   const withIncludes = (p: Row) => ({
@@ -32,7 +35,15 @@ function makeService(channelsEnabled: Partial<Record<'YOOKASSA' | 'CRYPTO', bool
     productOptions: options
       .filter((o) => o.profileId === p.id)
       .map((o) => ({ enabled: o.enabled, product: { id: o.productId, name: 'товар', slug: 'p' } })),
+    resellerOptions: resellerOptions
+      .filter((o) => o.profileId === p.id)
+      .map((o) => ({ enabled: o.enabled, reseller: { id: o.resellerId, displayName: 'реселлер' } })),
   });
+  type ResellerKey = { resellerId_profileId: { resellerId: string; profileId: string } };
+  const resellerByKey = (where: ResellerKey) =>
+    resellerOptions.find(
+      (o) => o.resellerId === where.resellerId_profileId.resellerId && o.profileId === where.resellerId_profileId.profileId,
+    );
   const profileOf = (o: Row) => profiles.find((p) => p.id === o.profileId)!;
   const matches = (o: Row, where: OptionWhere) =>
     (!where.productId || o.productId === where.productId) &&
@@ -61,7 +72,60 @@ function makeService(channelsEnabled: Partial<Record<'YOOKASSA' | 'CRYPTO', bool
         const row = profiles.find((p) => p.id === where.id && p.archivedAt === null);
         return row ? withIncludes(row) : null;
       }),
-      findMany: vi.fn(async () => profiles.filter((p) => p.archivedAt === null).map(withIncludes)),
+      findMany: vi.fn(async ({ where }: { where?: { scope?: string } } = {}) =>
+        profiles.filter((p) => p.archivedAt === null && (!where?.scope || p.scope === where.scope)).map(withIncludes),
+      ),
+    },
+    reseller: {
+      count: vi.fn(async ({ where }: { where: { id: string } }) => ([RESELLER, OTHER_RESELLER].includes(where.id) ? 1 : 0)),
+      findMany: vi.fn(async () => [{ id: RESELLER }, { id: OTHER_RESELLER }]),
+    },
+    resellerPaymentOption: {
+      findUnique: vi.fn(async ({ where }: { where: ResellerKey }) => resellerByKey(where) ?? null),
+      findFirst: vi.fn(async ({ where }: { where: { resellerId: string } }) =>
+        resellerOptions.filter((o) => o.resellerId === where.resellerId).at(-1) ?? null,
+      ),
+      findMany: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: { resellerId?: string; profileId?: string; enabled?: boolean };
+          include?: { profile?: unknown };
+        }) =>
+          resellerOptions
+            .filter((o) => (!where.resellerId || o.resellerId === where.resellerId) && (!where.profileId || o.profileId === where.profileId))
+            .filter((o) => where.enabled === undefined || o.enabled === where.enabled)
+            .filter((o) => profileOf(o).archivedAt === null)
+            .map((o) => (include?.profile ? { ...o, profile: withIncludes(profileOf(o)) } : o)),
+      ),
+      createMany: vi.fn(async ({ data }: { data: Row[] }) => {
+        for (const row of data) {
+          if (!resellerOptions.some((o) => o.resellerId === row.resellerId && o.profileId === row.profileId)) {
+            resellerOptions.push({ ...row, createdAt: tick++ });
+          }
+        }
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: { profileId: string }; data: Row }) => {
+        for (const o of resellerOptions) if (o.profileId === where.profileId) Object.assign(o, data);
+      }),
+      upsert: vi.fn(async ({ where, create, update }: { where: ResellerKey; create: Row; update: Row }) => {
+        const o = resellerByKey(where);
+        if (o) Object.assign(o, update);
+        else resellerOptions.push({ ...create, createdAt: tick++ });
+      }),
+      update: vi.fn(async ({ where, data }: { where: ResellerKey; data: Row }) => Object.assign(resellerByKey(where)!, data)),
+      deleteMany: vi.fn(async ({ where }: { where: { profileId: string; resellerId?: string } }) => {
+        let count = 0;
+        for (let i = resellerOptions.length - 1; i >= 0; i--) {
+          const o = resellerOptions[i]!;
+          if (o.profileId === where.profileId && (!where.resellerId || o.resellerId === where.resellerId)) {
+            resellerOptions.splice(i, 1);
+            count++;
+          }
+        }
+        return { count };
+      }),
     },
     productPaymentOption: {
       findUnique: vi.fn(async ({ where }: { where: OptionKey }) => byKey(where) ?? null),
@@ -107,7 +171,7 @@ function makeService(channelsEnabled: Partial<Record<'YOOKASSA' | 'CRYPTO', bool
     isEnabled: vi.fn(async (p: 'YOOKASSA' | 'CRYPTO') => channelsEnabled[p] ?? false),
   } as unknown as PaymentMethodsService;
 
-  return { service: new PaymentProfilesService(prisma, crypto, audit, methods), profiles, options };
+  return { service: new PaymentProfilesService(prisma, crypto, audit, methods), profiles, options, resellerOptions };
 }
 
 describe('PaymentProfilesService', () => {
@@ -201,5 +265,67 @@ describe('PaymentProfilesService', () => {
 
     const result = await service.archiveMany([template.id], 'admin');
     expect(result).toMatchObject({ total: 1, succeeded: 0, failed: [{ code: 'NOT_FOUND' }] });
+  });
+});
+
+describe('PaymentProfilesService — раздел реселлеров', () => {
+  it('реквизиты реселлеров не привязываются к товару, ЮKassa в раздел реселлеров не попадает', async () => {
+    const { service } = makeService();
+    const forResellers = await service.create({ provider: 'CRYPTO', name: 'Опт', scope: 'RESELLERS', config: { wallets: [WALLET] } }, 'admin');
+    expect(forResellers.scope).toBe('RESELLERS');
+    await expect(service.attach(PRODUCT, forResellers.id, 'admin')).rejects.toMatchObject({ response: { code: 'PROFILE_WRONG_SCOPE' } });
+    await expect(
+      service.create({ provider: 'YOOKASSA', name: 'Магазин', scope: 'RESELLERS', secrets: { shopId: '1', secretKey: 'k' } }, 'admin'),
+    ).rejects.toMatchObject({ response: { code: 'PROFILE_PROVIDER_NOT_FOR_RESELLERS' } });
+  });
+
+  it('перенос снимает привязки прежнего раздела, личные реквизиты товара становятся общими', async () => {
+    const { service, options, profiles } = makeService();
+    const own = await service.create({ provider: 'CRYPTO', name: 'Свой', productId: PRODUCT, config: { wallets: [WALLET] } }, 'admin');
+    await service.attach(PRODUCT, own.id, 'admin');
+
+    const moved = await service.move(own.id, 'RESELLERS', 'admin');
+    expect(moved).toMatchObject({ scope: 'RESELLERS', kind: 'TEMPLATE' });
+    expect(options).toHaveLength(0);
+    expect(profiles[0]?.productId).toBeNull();
+
+    await service.attachToReseller(RESELLER, own.id, 'admin');
+    await service.move(own.id, 'PRODUCTS', 'admin');
+    expect((await service.resellerOptions(RESELLER)).options).toEqual([]);
+  });
+
+  it('новые реквизиты реселлеров не доступны никому, пока доступ не выдан явно', async () => {
+    const { service } = makeService();
+    const common = await service.create({ provider: 'CRYPTO', name: 'Общий', scope: 'RESELLERS', config: { wallets: [WALLET] } }, 'admin');
+    const vip = await service.create(
+      { provider: 'CRYPTO', name: 'VIP', scope: 'RESELLERS', config: { wallets: [{ ...WALLET, id: 'ton', currency: 'TON' }] } },
+      'admin',
+    );
+    // Реквизиты товаров для пополнения не годятся.
+    await service.create({ provider: 'CRYPTO', name: 'Товары', config: { wallets: [{ ...WALLET, id: 'btc' }] } }, 'admin');
+
+    expect(await service.topupWallets(RESELLER)).toEqual([]);
+
+    await service.attachToReseller(RESELLER, vip.id, 'admin');
+    expect(await service.topupWallets(RESELLER)).toEqual([
+      { id: `${vip.id}:ton`, currency: 'TON', network: 'TRC20', profileId: vip.id, profileName: 'VIP' },
+    ]);
+    expect(await service.topupWallets(OTHER_RESELLER)).toEqual([]);
+    await expect(service.topupTarget(`${common.id}:usdt`, RESELLER)).rejects.toMatchObject({ response: { code: 'WALLET_NOT_FOUND' } });
+    await expect(service.topupTarget(`${vip.id}:ton`, RESELLER)).resolves.toMatchObject({ profileId: vip.id });
+
+    await service.updateResellerOption(RESELLER, vip.id, { enabled: false }, 'admin');
+    expect(await service.topupWallets(RESELLER)).toEqual([]);
+  });
+
+  it('«всем реселлерам» выдаёт доступ каждому и включает выключенные привязки', async () => {
+    const { service } = makeService();
+    const common = await service.create({ provider: 'CRYPTO', name: 'Общий', scope: 'RESELLERS', config: { wallets: [WALLET] } }, 'admin');
+    await service.attachToReseller(RESELLER, common.id, 'admin');
+    await service.updateResellerOption(RESELLER, common.id, { enabled: false }, 'admin');
+
+    const view = await service.attachToAllResellers(common.id, 'admin');
+    expect(view.resellers.map((r) => r.enabled)).toEqual([true, true]);
+    expect((await service.topupWallets(OTHER_RESELLER)).map((w) => w.profileName)).toEqual(['Общий']);
   });
 });

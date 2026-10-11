@@ -242,7 +242,7 @@ export function DigisellerRedeemForm() {
           </AlertDescription>
         </Alert>
         <Button asChild variant='outline'>
-          <Link to='/'>{t('billing.code.alreadyYours.action')}</Link>
+          <Link to='/licenses'>{t('billing.code.alreadyYours.action')}</Link>
         </Button>
       </div>
     )

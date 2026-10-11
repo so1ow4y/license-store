@@ -59,6 +59,8 @@ export const PERMISSIONS = {
   USERS_BLOCK: 'users.block',
   ROLES_READ: 'roles.read',
   ROLES_ASSIGN: 'roles.assign',
+  /** Свои роли из набора прав (раздел настроек «Роли и права»). */
+  ROLES_MANAGE: 'roles.manage',
   SETTINGS_READ: 'settings.read',
   SETTINGS_MANAGE: 'settings.manage',
   /** Журнал событий, журнал входов, адреса пользователей, блокировки IP. */
@@ -66,6 +68,9 @@ export const PERMISSIONS = {
   LOGINS_READ: 'logins.read',
   SECURITY_IPS_READ: 'security.ips.read',
   SECURITY_IP_BLOCK: 'security.ip_block',
+  SECURITY_RULES_MANAGE: 'security.rules.manage',
+  SECURITY_TRAFFIC_MANAGE: 'security.traffic.manage',
+  LAUNCHER_MANAGE: 'launcher.manage',
 } as const
 
 export type PermissionList = readonly string[]

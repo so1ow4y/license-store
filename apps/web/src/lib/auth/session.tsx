@@ -2,6 +2,7 @@ import { useCallback, useSyncExternalStore } from 'react'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api/client'
 import { ApiError } from '@/lib/api/http'
+import { setPriorityPass } from '@/lib/api/priority-pass'
 import { queryClient } from '@/lib/api/query-client'
 import { has } from './permissions'
 import { bootstrapTokens, setRefreshFailureHandler } from './refresh'
@@ -38,13 +39,35 @@ export const meQueryOptions = () =>
     queryFn: async ({ signal }) => {
       const me = await apiFetch<Me>('/auth/me', { signal })
       rememberSessionUser(me.id)
+      refreshPriorityPass(me.sessionId)
       return me
     },
     // Права меняются редко, но после смены пароля или 2FA данные обязаны
     // перечитаться — за этим следят экраны безопасности через invalidate.
+    // Возврат на вкладку тоже перечитывает: роль могли поменять в другой
+    // вкладке или другой администратор, и меню должно это увидеть.
     staleTime: 60_000,
+    refetchOnWindowFocus: true,
     retry: false,
   })
+
+/** Сессия, для которой пропуск приоритета уже запрошен: раз на вход, а не на каждый refetch. */
+let passSession: string | null = null
+
+/**
+ * Пропуск приоритета для доверенного пользователя (priority-pass.ts). У
+ * обычного сервер вернёт null — тогда чужой пропуск в этом браузере стирается.
+ * Ошибка не мешает сессии: без пропуска просто нет места в очереди.
+ */
+function refreshPriorityPass(sessionId: string): void {
+  if (passSession === sessionId) return
+  passSession = sessionId
+  apiFetch<{ pass: string | null; expiresAt?: string }>('/security/priority-pass')
+    .then((result) => setPriorityPass(result.pass && result.expiresAt ? { pass: result.pass, expiresAt: result.expiresAt } : null))
+    .catch(() => {
+      passSession = null
+    })
+}
 
 /* ------------------------------------------------------------------ */
 /* Подсказка профиля                                                    */

@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, type PaymentProfile } from '@prisma/client';
+import { PaymentScope, Prisma, type PaymentProfile } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
 
 import { AuditService } from '@common/audit/audit.service';
@@ -46,14 +46,29 @@ import { PaymentMethodsService } from './payment-methods.service';
  * когда, к каким товарам привязаны. Удаление снимает реквизиты со всех
  * товаров сразу. Создавать может payment_profiles.manage, привязывать
  * готовые — products.payments.assign.
+ *
+ * Реестр разделён на два раздела (scope): реквизиты товаров — для оплаты
+ * покупателями, реквизиты реселлеров — для пополнения их баланса. Реквизиты
+ * переносятся между разделами; при переносе они снимаются со всего, к чему
+ * были привязаны в прежнем разделе. Реквизиты реселлеров по умолчанию не
+ * доступны никому: доступ выдаётся явно — из карточки реселлера или из
+ * самих реквизитов (в том числе сразу всем реселлерам).
  */
 
 export interface ProfileInput {
   provider?: string;
   name?: string;
+  scope?: string;
   productId?: string | null;
   config?: Record<string, unknown>;
   secrets?: Record<string, string>;
+}
+
+/** Пополнение баланса реселлера сейчас принимается только криптой. */
+const RESELLER_PROVIDERS: ProfileProvider[] = ['CRYPTO'];
+
+function isScope(value: unknown): value is PaymentScope {
+  return value === PaymentScope.PRODUCTS || value === PaymentScope.RESELLERS;
 }
 
 /** Реквизиты, по которым принимается конкретный платёж. */
@@ -77,6 +92,10 @@ const PROFILE_INCLUDE = {
     select: { enabled: true, product: { select: { id: true, name: true, slug: true } } },
     orderBy: { createdAt: 'asc' },
   },
+  resellerOptions: {
+    select: { enabled: true, reseller: { select: { id: true, displayName: true } } },
+    orderBy: { createdAt: 'asc' },
+  },
 } satisfies Prisma.PaymentProfileInclude;
 
 type ProfileRow = Prisma.PaymentProfileGetPayload<{ include: typeof PROFILE_INCLUDE }>;
@@ -92,12 +111,16 @@ export class PaymentProfilesService {
 
   // ---------------------------------------------------------------- чтение
 
-  /** Что можно привязать к товару: шаблоны и его личные реквизиты. */
-  async list(productId?: string) {
+  /**
+   * Что можно привязать: к товару — шаблоны раздела товаров и его личные
+   * реквизиты; к реселлеру (scope=RESELLERS) — реквизиты раздела реселлеров.
+   */
+  async list(productId?: string, scope: PaymentScope = PaymentScope.PRODUCTS) {
     const rows = await this.prisma.paymentProfile.findMany({
       where: {
         archivedAt: null,
-        OR: [{ productId: null }, ...(productId ? [{ productId }] : [])],
+        scope,
+        OR: [{ productId: null }, ...(productId && scope === PaymentScope.PRODUCTS ? [{ productId }] : [])],
       },
       orderBy: [{ productId: 'asc' }, { createdAt: 'asc' }],
       include: PROFILE_INCLUDE,
@@ -112,6 +135,7 @@ export class PaymentProfilesService {
   async search(input: {
     q?: string;
     provider?: string;
+    scope?: PaymentScope;
     kind?: 'TEMPLATE' | 'PERSONAL';
     from?: Date;
     to?: Date;
@@ -123,6 +147,7 @@ export class PaymentProfilesService {
     const conditions = [
       sql`p.archived_at IS NULL`,
       input.provider ? sql`p.provider::text = ${input.provider}` : null,
+      input.scope ? sql`p.scope::text = ${input.scope}` : null,
       input.kind === 'TEMPLATE' ? sql`p.product_id IS NULL` : input.kind === 'PERSONAL' ? sql`p.product_id IS NOT NULL` : null,
       ...timeRange(raw('p.created_at'), input),
       queryCondition(input.q, PROFILE_FIELDS, (term) => this.profileTerm(term)),
@@ -162,6 +187,14 @@ export class PaymentProfilesService {
     if (!isProfileProvider(provider)) {
       throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Реквизиты бывают для ЮKassa и криптовалюты' });
     }
+    const scope = input.scope === undefined ? PaymentScope.PRODUCTS : input.scope;
+    if (!isScope(scope)) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Неизвестный раздел реквизитов' });
+    if (scope === PaymentScope.RESELLERS) {
+      this.assertResellerProvider(provider);
+      if (input.productId) {
+        throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Реквизиты реселлеров не принадлежат товару' });
+      }
+    }
     if (input.productId) await this.assertProduct(input.productId);
 
     const id = uuidv7();
@@ -172,6 +205,7 @@ export class PaymentProfilesService {
       data: {
         id,
         provider,
+        scope,
         name: this.cleanName(input.name),
         productId: input.productId ?? null,
         config: config as Prisma.InputJsonValue,
@@ -187,7 +221,48 @@ export class PaymentProfilesService {
       actorType: 'USER',
       entityType: 'payment_profile',
       entityId: id,
-      after: { provider, name: input.name, productId: input.productId ?? null, config, secretsSet: Object.keys(secrets) },
+      after: { provider, scope, name: input.name, productId: input.productId ?? null, config, secretsSet: Object.keys(secrets) },
+    });
+    return this.get(id);
+  }
+
+  /**
+   * Перенести реквизиты в другой раздел. Из товаров к реселлерам — со снятием
+   * со всех товаров (личные реквизиты товара становятся общими); обратно —
+   * со снятием со всех реселлеров.
+   */
+  async move(id: string, rawScope: string, actorId: string) {
+    if (!isScope(rawScope)) throw new BadRequestException({ code: 'VALIDATION_ERROR', message: 'Неизвестный раздел реквизитов' });
+    const scope = rawScope;
+    const row = await this.loadActive(id);
+    if (row.scope === scope) return this.get(id);
+    if (scope === PaymentScope.RESELLERS) this.assertResellerProvider(row.provider as ProfileProvider);
+
+    const [products, resellers] = await Promise.all([
+      this.prisma.productPaymentOption.findMany({ where: { profileId: id }, select: { productId: true } }),
+      this.prisma.resellerPaymentOption.findMany({ where: { profileId: id }, select: { resellerId: true } }),
+    ]);
+    await this.prisma.$transaction([
+      this.prisma.productPaymentOption.deleteMany({ where: { profileId: id } }),
+      this.prisma.resellerPaymentOption.deleteMany({ where: { profileId: id } }),
+      this.prisma.paymentProfile.update({
+        where: { id },
+        data: { scope, ...(scope === PaymentScope.RESELLERS ? { productId: null } : {}), updatedById: actorId },
+      }),
+    ]);
+    await this.audit.record({
+      action: 'payment_profile.move',
+      actorId,
+      actorType: 'USER',
+      entityType: 'payment_profile',
+      entityId: id,
+      before: {
+        scope: row.scope,
+        productId: row.productId,
+        products: products.map((p) => p.productId),
+        resellers: resellers.map((r) => r.resellerId),
+      },
+      after: { scope },
     });
     return this.get(id);
   }
@@ -232,6 +307,7 @@ export class PaymentProfilesService {
 
     await this.prisma.$transaction([
       this.prisma.productPaymentOption.deleteMany({ where: { profileId: id } }),
+      this.prisma.resellerPaymentOption.deleteMany({ where: { profileId: id } }),
       this.prisma.paymentProfile.update({ where: { id }, data: { archivedAt: new Date(), updatedById: actorId } }),
     ]);
     await this.audit.record({
@@ -291,6 +367,9 @@ export class PaymentProfilesService {
   async attach(productId: string, profileId: string, actorId: string) {
     await this.assertProduct(productId);
     const profile = await this.loadActive(profileId);
+    if (profile.scope !== PaymentScope.PRODUCTS) {
+      throw new BadRequestException({ code: 'PROFILE_WRONG_SCOPE', message: 'Это реквизиты реселлеров — перенесите их в раздел товаров' });
+    }
     if (profile.productId && profile.productId !== productId) {
       throw new BadRequestException({ code: 'PROFILE_OF_OTHER_PRODUCT', message: 'Это личные реквизиты другого товара' });
     }
@@ -431,36 +510,149 @@ export class PaymentProfilesService {
   }
 
   /**
-   * Кошельки для пополнения баланса реселлеров — из готовых крипто-шаблонов
-   * (общих реквизитов, не привязанных к товару). Адреса здесь не отдаются:
-   * адрес попадает только в созданную заявку.
+   * Реквизиты, которыми реселлер пополняет баланс: только выданные ему явно
+   * и включённые. Ничего не выдано — пополнять нечем.
    */
-  async topupWallets() {
-    const rows = await this.prisma.paymentProfile.findMany({
-      where: { provider: 'CRYPTO', productId: null, archivedAt: null },
-      orderBy: { createdAt: 'asc' },
+  private async topupProfiles(resellerId: string): Promise<PaymentProfile[]> {
+    const options = await this.prisma.resellerPaymentOption.findMany({
+      where: { resellerId, enabled: true, profile: { archivedAt: null, scope: PaymentScope.RESELLERS } },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      include: { profile: true },
     });
+    return options.map((o) => o.profile);
+  }
+
+  /**
+   * Кошельки для пополнения баланса реселлера с названием реквизитов, к
+   * которым они относятся. Адреса здесь не отдаются — только в заявке.
+   */
+  async topupWallets(resellerId: string) {
+    const rows = await this.topupProfiles(resellerId);
     return rows
-      .map((row) => this.target(row) as CheckoutTarget<'CRYPTO'>)
-      .filter((t) => profileReadiness('CRYPTO', t.config, t.secrets) === null)
-      .flatMap((t) =>
-        t.config.wallets.map((w) => ({ id: `${t.profileId}:${w.id}`, currency: w.currency, network: w.network })),
+      .filter((row) => RESELLER_PROVIDERS.includes(row.provider as ProfileProvider))
+      .map((row) => ({ name: row.name, target: this.target(row) as CheckoutTarget<'CRYPTO'> }))
+      .filter(({ target }) => profileReadiness('CRYPTO', target.config, target.secrets) === null)
+      .flatMap(({ name, target }) =>
+        target.config.wallets.map((w) => ({
+          id: `${target.profileId}:${w.id}`,
+          currency: w.currency,
+          network: w.network,
+          profileId: target.profileId,
+          profileName: name,
+        })),
       );
   }
 
-  /** Кошелёк для заявки на пополнение по id вида «реквизиты:кошелёк». */
-  async topupTarget(walletRef: string) {
+  /** Кошелёк для заявки на пополнение по id вида «реквизиты:кошелёк» — только из доступных реселлеру. */
+  async topupTarget(walletRef: string, resellerId: string) {
     const ref = WALLET_REF_RE.exec(walletRef);
     const notFound = new BadRequestException({ code: 'WALLET_NOT_FOUND', message: 'Выбранный кошелёк недоступен' });
     if (!ref) throw notFound;
-    const row = await this.prisma.paymentProfile.findFirst({
-      where: { id: ref[1], provider: 'CRYPTO', productId: null, archivedAt: null },
-    });
+    const row = (await this.topupProfiles(resellerId)).find((p) => p.id === ref[1] && p.provider === 'CRYPTO');
     if (!row) throw notFound;
     const target = this.target(row) as CheckoutTarget<'CRYPTO'>;
     const wallet = target.config.wallets.find((w) => w.id === ref[2]);
     if (!wallet || profileReadiness('CRYPTO', target.config, target.secrets) !== null) throw notFound;
     return { profileId: row.id, wallet, config: target.config };
+  }
+
+  // ------------------------------------------------------ привязка к реселлеру
+
+  /** Реквизиты, выданные реселлеру; пустой список — пополнять ему нечем. */
+  async resellerOptions(resellerId: string) {
+    await this.assertReseller(resellerId);
+    const options = await this.prisma.resellerPaymentOption.findMany({
+      where: { resellerId, profile: { archivedAt: null } },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      include: { profile: { include: PROFILE_INCLUDE } },
+    });
+    const views = new Map((await this.toViews(options.map((o) => o.profile))).map((v) => [v.id, v]));
+    return {
+      options: options.map((o) => ({ enabled: o.enabled, sortOrder: o.sortOrder, profile: views.get(o.profileId)! })),
+    };
+  }
+
+  /**
+   * Выдать реквизиты сразу всем реселлерам, кроме закрытых: недостающие
+   * привязки создаются, выключенные включаются.
+   */
+  async attachToAllResellers(profileId: string, actorId: string) {
+    const profile = await this.loadActive(profileId);
+    if (profile.scope !== PaymentScope.RESELLERS) {
+      throw new BadRequestException({ code: 'PROFILE_WRONG_SCOPE', message: 'Это реквизиты товаров — перенесите их в раздел реселлеров' });
+    }
+    const resellers = await this.prisma.reseller.findMany({
+      where: { status: { not: 'CLOSED' } },
+      select: { id: true },
+    });
+    await this.prisma.$transaction([
+      this.prisma.resellerPaymentOption.createMany({
+        data: resellers.map((r) => ({ resellerId: r.id, profileId, enabled: true, sortOrder: 0, updatedById: actorId })),
+        skipDuplicates: true,
+      }),
+      this.prisma.resellerPaymentOption.updateMany({
+        where: { profileId, resellerId: { in: resellers.map((r) => r.id) } },
+        data: { enabled: true, updatedById: actorId },
+      }),
+    ]);
+    await this.audit.record({
+      action: 'payment_profile.resellers_all',
+      actorId,
+      actorType: 'USER',
+      entityType: 'payment_profile',
+      entityId: profileId,
+      after: { resellers: resellers.length },
+    });
+    return this.get(profileId);
+  }
+
+  async attachToReseller(resellerId: string, profileId: string, actorId: string) {
+    await this.assertReseller(resellerId);
+    const profile = await this.loadActive(profileId);
+    if (profile.scope !== PaymentScope.RESELLERS) {
+      throw new BadRequestException({ code: 'PROFILE_WRONG_SCOPE', message: 'Это реквизиты товаров — перенесите их в раздел реселлеров' });
+    }
+    const last = await this.prisma.resellerPaymentOption.findFirst({
+      where: { resellerId },
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true },
+    });
+    await this.prisma.resellerPaymentOption.upsert({
+      where: { resellerId_profileId: { resellerId, profileId } },
+      update: { enabled: true, updatedById: actorId },
+      create: { resellerId, profileId, enabled: true, sortOrder: (last?.sortOrder ?? -1) + 1, updatedById: actorId },
+    });
+    await this.auditResellerOption(resellerId, actorId, null, { profileId, attached: true });
+    return this.resellerOptions(resellerId);
+  }
+
+  async updateResellerOption(
+    resellerId: string,
+    profileId: string,
+    input: { enabled?: boolean; sortOrder?: number },
+    actorId: string,
+  ) {
+    const before = await this.prisma.resellerPaymentOption.findUnique({
+      where: { resellerId_profileId: { resellerId, profileId } },
+    });
+    if (!before) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Эти реквизиты не привязаны к реселлеру' });
+    await this.prisma.resellerPaymentOption.update({
+      where: { resellerId_profileId: { resellerId, profileId } },
+      data: {
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+        updatedById: actorId,
+      },
+    });
+    await this.auditResellerOption(resellerId, actorId, { profileId, enabled: before.enabled }, { profileId, ...input });
+    return this.resellerOptions(resellerId);
+  }
+
+  async detachFromReseller(resellerId: string, profileId: string, actorId: string) {
+    const deleted = await this.prisma.resellerPaymentOption.deleteMany({ where: { resellerId, profileId } });
+    if (deleted.count === 0) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Эти реквизиты не привязаны к реселлеру' });
+    await this.auditResellerOption(resellerId, actorId, { profileId }, { profileId, attached: false });
+    return this.resellerOptions(resellerId);
   }
 
   /**
@@ -472,7 +664,7 @@ export class PaymentProfilesService {
     const row = profileId
       ? await this.prisma.paymentProfile.findUnique({ where: { id: profileId } })
       : await this.prisma.paymentProfile.findFirst({
-          where: { provider, productId: null, archivedAt: null },
+          where: { provider, scope: PaymentScope.PRODUCTS, productId: null, archivedAt: null },
           orderBy: { createdAt: 'asc' },
         });
     return row ? (this.target(row) as CheckoutTarget<P>) : null;
@@ -540,6 +732,7 @@ export class PaymentProfilesService {
         id: row.id,
         provider: row.provider,
         name: row.name,
+        scope: row.scope,
         kind: row.productId ? ('PERSONAL' as const) : ('TEMPLATE' as const),
         productId: row.productId,
         productName: row.product?.name ?? null,
@@ -548,8 +741,10 @@ export class PaymentProfilesService {
         secretsSet: Object.fromEntries(PROFILE_SECRET_FIELDS[provider].map((f) => [f, Boolean(secrets[f])])),
         ready: notReadyReason === null,
         notReadyReason,
-        usedBy: row.productOptions.length,
+        usedBy: row.productOptions.length + row.resellerOptions.length,
         products: row.productOptions.map((o) => ({ ...o.product, enabled: o.enabled })),
+        /** Реселлеры, которым реквизиты привязаны лично. */
+        resellers: row.resellerOptions.map((o) => ({ ...o.reseller, enabled: o.enabled })),
         createdById: row.createdById,
         createdByUsername: row.createdById ? (usernames.get(row.createdById) ?? null) : null,
         createdAt: row.createdAt,
@@ -587,6 +782,32 @@ export class PaymentProfilesService {
   private async assertProduct(productId: string): Promise<void> {
     const exists = await this.prisma.product.count({ where: { id: productId } });
     if (!exists) throw new NotFoundException({ code: 'NOT_FOUND', message: 'Товар не найден' });
+  }
+
+  private async assertReseller(resellerId: string): Promise<void> {
+    const exists = await this.prisma.reseller.count({ where: { id: resellerId } });
+    if (!exists) throw new NotFoundException({ code: 'RESELLER_NOT_FOUND', message: 'Реселлер не найден' });
+  }
+
+  private assertResellerProvider(provider: ProfileProvider): void {
+    if (!RESELLER_PROVIDERS.includes(provider)) {
+      throw new BadRequestException({
+        code: 'PROFILE_PROVIDER_NOT_FOR_RESELLERS',
+        message: 'Реселлеры пополняют баланс только криптой — ЮKassa остаётся в разделе товаров',
+      });
+    }
+  }
+
+  private async auditResellerOption(resellerId: string, actorId: string, before: object | null, after: object) {
+    await this.audit.record({
+      action: 'reseller.payment_option',
+      actorId,
+      actorType: 'USER',
+      entityType: 'reseller',
+      entityId: resellerId,
+      before,
+      after,
+    });
   }
 
   private cleanName(name: string | undefined): string {

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { AntiFraudSeverity, AntiFraudType, UserStatus } from '@prisma/client';
+import { AntiFraudSeverity, AntiFraudType, IpBlockLevel, UserStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -22,7 +22,7 @@ import {
   Min,
 } from 'class-validator';
 
-class PageDto {
+export class PageDto {
   @ApiPropertyOptional({ default: 0 })
   @IsOptional()
   @Type(() => Number)
@@ -111,6 +111,44 @@ export class SetRolesDto {
   roles!: string[];
 }
 
+export class UpdateRoleDto {
+  @ApiPropertyOptional({ example: 'Старший саппорт' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  name?: string;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string | null;
+
+  @ApiPropertyOptional({ example: 65, description: 'Уровень: ниже вашего; с правами сотрудника — от 60' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(11)
+  @Max(99)
+  priority?: number;
+
+  @ApiPropertyOptional({ example: ['users.read.any', 'orders.read.any'] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(200)
+  @IsString({ each: true })
+  permissions?: string[];
+}
+
+export class CreateRoleDto extends UpdateRoleDto {
+  @ApiProperty({ example: 'senior_support', description: 'Код роли: латиница, цифры и _' })
+  @IsString()
+  @Matches(/^[a-z][a-z0-9_]{2,63}$/, { message: 'Код роли: 3–64 символа, латиница в нижнем регистре, цифры и _' })
+  slug!: string;
+}
+
 export class UpdateSettingDto {
   @ApiProperty({ description: 'Новое значение того же типа, что и текущее' })
   @IsDefined()
@@ -166,6 +204,20 @@ export class CreateIpBlockDto {
   @Min(1)
   @Max(24 * 365)
   expiresInHours?: number;
+
+  @ApiPropertyOptional({ enum: IpBlockLevel, description: 'APP — в приложении, EDGE — на nginx, FIREWALL — пакеты на хосте' })
+  @IsOptional()
+  @IsEnum(IpBlockLevel)
+  level?: IpBlockLevel;
+
+  @ApiPropertyOptional({ type: [Number], description: 'Только для FIREWALL; пусто — все порты', example: [22, 443] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(32)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(65535, { each: true })
+  ports?: number[];
 }
 
 export class BulkUsersDto {
@@ -203,6 +255,23 @@ class BlockDurationDto {
   expiresInHours?: number;
 }
 
+/** Срок и уровень блокировки адресов. */
+class IpBlockParamsDto extends BlockDurationDto {
+  @ApiPropertyOptional({ enum: IpBlockLevel })
+  @IsOptional()
+  @IsEnum(IpBlockLevel)
+  level?: IpBlockLevel;
+
+  @ApiPropertyOptional({ type: [Number], description: 'Только для FIREWALL; пусто — все порты' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(32)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(65535, { each: true })
+  ports?: number[];
+}
+
 export class BlockUsersIpsDto extends BlockDurationDto {
   @ApiProperty({ type: [String], description: 'Пользователи, чьи адреса заблокировать' })
   @IsArray()
@@ -212,7 +281,7 @@ export class BlockUsersIpsDto extends BlockDurationDto {
   ids!: string[];
 }
 
-export class BulkIpBlockDto extends BlockDurationDto {
+export class BulkIpBlockDto extends IpBlockParamsDto {
   @ApiProperty({ type: [String], example: ['203.0.113.7', '198.51.100.0/24'] })
   @IsArray()
   @ArrayMinSize(1)

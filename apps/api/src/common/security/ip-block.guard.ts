@@ -14,7 +14,8 @@ export class IpBlockGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (context.getType() !== 'http') return true;
     const request = context.switchToHttp().getRequest<FastifyRequest>();
-    if (request.url.startsWith('/health')) return true;
+    // Краевые агенты забирают списки блокировок со своего служебного адреса.
+    if (request.url.startsWith('/health') || request.url.startsWith('/api/v1/internal/edge/')) return true;
 
     if (await this.blocks.isBlocked(request.ip)) {
       throw new ForbiddenException({ code: 'IP_BLOCKED', message: 'Доступ с вашего адреса заблокирован' });

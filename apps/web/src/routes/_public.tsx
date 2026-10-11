@@ -1,4 +1,6 @@
-import { createFileRoute, Outlet } from '@tanstack/react-router'
+import { createFileRoute, Link, Outlet } from '@tanstack/react-router'
+import { ArrowLeft } from 'lucide-react'
+import { useT } from '@/lib/i18n'
 import { LocaleSwitcher } from '@/components/locale-switcher'
 
 /**
@@ -13,6 +15,7 @@ export const Route = createFileRoute('/_public')({
 })
 
 function PublicLayout() {
+  const t = useT()
   return (
     <div className='flex min-h-svh flex-col items-center justify-center bg-background px-4 py-10'>
       {/*
@@ -23,7 +26,12 @@ function PublicLayout() {
         посетитель; язык, недоступный до входа, недоступен ровно тогда, когда
         он нужнее всего.
       */}
-      <div className='mb-4 flex w-full max-w-sm justify-end'>
+      <div className='mb-4 flex w-full max-w-sm items-center justify-between'>
+        {/* Вход — отдельная «вкладка» платформы: назад ведёт на её главную. */}
+        <Link to='/' className='inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground'>
+          <ArrowLeft className='size-4' />
+          {t('landing.backHome')}
+        </Link>
         <LocaleSwitcher />
       </div>
       <div className='w-full max-w-sm'>

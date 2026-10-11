@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { IpBlockLevel, Prisma } from '@prisma/client';
 import { v7 as uuidv7 } from 'uuid';
 
 import { AuditService } from '../audit/audit.service';
@@ -11,15 +11,61 @@ import { cidrContains, normalizeIp, parseCidr, type ParsedCidr } from './ip';
 const CACHE_TTL_MS = 15_000;
 /** Узкие префиксы — защита от опечатки, которая отрежет пол-интернета. */
 const MIN_PREFIX = { ipv4: 16, ipv6: 32 } as const;
+const LOOPBACK = [parseCidr('127.0.0.0/8')!, parseCidr('::1/128')!];
+/** Больше портов в одном блоке — это уже «все порты», и записывать их так честнее. */
+const MAX_PORTS = 32;
+
+/**
+ * Порты, через которые трафик доходит до nginx и API. Блок фаервола только
+ * по другим портам (скажем, 22) приложение и nginx не применяют: пользователь
+ * с этого адреса продолжает работать с сайтом, закрыт лишь SSH.
+ */
+export const WEB_PORTS = [80, 443, 8080, 8443] as const;
 
 /**
  * Кто блокирует: его текущий адрес (свой заблокировать нельзя) и уровень
- * роли (адреса тех, кто не ниже, заблокировать нельзя).
+ * роли (адреса тех, кто не ниже, заблокировать нельзя). У правила
+ * корреляции id нет — в журнал оно попадает системным актором с подписью.
  */
 export interface IpBlockActor {
-  id: string;
+  id: string | null;
+  label?: string;
   ip?: string;
   rolePriority?: number;
+}
+
+export interface IpBlockInput {
+  value: string;
+  reason?: string;
+  expiresInHours?: number;
+  level?: IpBlockLevel;
+  ports?: number[];
+  source?: 'manual' | 'rule';
+  ruleId?: string;
+}
+
+/** Активный блок для краевых агентов: nginx и фаервола. */
+export interface EdgeBlock {
+  cidr: string;
+  level: IpBlockLevel;
+  ports: number[];
+}
+
+/** Порты, нормализованные для хранения: уникальные, по возрастанию. */
+export function normalizePorts(ports: number[] | undefined): number[] {
+  const unique = [...new Set(ports ?? [])].sort((a, b) => a - b);
+  if (unique.some((p) => !Number.isInteger(p) || p < 1 || p > 65_535)) {
+    throw new BadRequestException({ code: 'PORT_INVALID', message: 'Порт — целое число от 1 до 65535' });
+  }
+  if (unique.length > MAX_PORTS) {
+    throw new BadRequestException({ code: 'PORTS_TOO_MANY', message: `Не больше ${MAX_PORTS} портов в одной блокировке` });
+  }
+  return unique;
+}
+
+/** Затрагивает ли блок веб-трафик: без портов — весь, с портами — если среди них веб. */
+export function coversWeb(ports: number[]): boolean {
+  return ports.length === 0 || ports.some((p) => (WEB_PORTS as readonly number[]).includes(p));
 }
 
 /**
@@ -66,10 +112,7 @@ export class IpBlockService {
    * Заблокировать адрес или подсеть. Повторная блокировка той же сети
    * обновляет причину и срок.
    */
-  async create(
-    input: { value: string; reason?: string; expiresInHours?: number },
-    actor: IpBlockActor,
-  ) {
+  async create(input: IpBlockInput, actor: IpBlockActor) {
     const parsed = parseCidr(input.value);
     if (!parsed) {
       throw new BadRequestException({ code: 'IP_INVALID', message: 'Это не адрес и не подсеть (пример: 203.0.113.7 или 203.0.113.0/24)' });
@@ -79,6 +122,10 @@ export class IpBlockService {
         code: 'IP_RANGE_TOO_WIDE',
         message: `Слишком широкая подсеть: минимум /${MIN_PREFIX[parsed.family]}`,
       });
+    }
+    // Петля — это сам сервер: пробы здоровья, агенты, межсервисные вызовы.
+    if (LOOPBACK.some((loop) => cidrContains(loop, parsed.network) || cidrContains(parsed, loop.network))) {
+      throw new BadRequestException({ code: 'IP_BLOCK_LOOPBACK', message: 'Петлевой адрес (127.0.0.0/8, ::1) — это сам сервер' });
     }
     if (actor.ip && cidrContains(parsed, actor.ip)) {
       throw new BadRequestException({ code: 'IP_BLOCK_SELF', message: 'В эту подсеть входит ваш текущий адрес' });
@@ -93,7 +140,8 @@ export class IpBlockService {
         JOIN users u ON u.id = ui.user_id
         JOIN user_roles ur ON ur.user_id = ui.user_id
         JOIN roles r ON r.id = ur.role_id
-        WHERE ui.ip <<= ${parsed.cidr}::inet AND r.priority >= ${actor.rolePriority} AND ui.user_id <> ${actor.id}::uuid
+        WHERE ui.ip <<= ${parsed.cidr}::inet AND r.priority >= ${actor.rolePriority}
+          AND (${actor.id}::uuid IS NULL OR ui.user_id <> ${actor.id}::uuid)
         LIMIT 1`);
       if (privileged) {
         throw new ForbiddenException({
@@ -103,8 +151,20 @@ export class IpBlockService {
       }
     }
 
+    const level = input.level ?? IpBlockLevel.APP;
+    // Порты имеют смысл только для фаервола: nginx и приложение видят HTTP,
+    // а не номер порта, на который пришёл пакет.
+    const ports = level === IpBlockLevel.FIREWALL ? normalizePorts(input.ports) : [];
     const expiresAt = input.expiresInHours ? new Date(Date.now() + input.expiresInHours * 3_600_000) : null;
-    const data = { reason: input.reason?.trim() || null, expiresAt, createdById: actor.id };
+    const data = {
+      reason: input.reason?.trim() || null,
+      expiresAt,
+      createdById: actor.id,
+      level,
+      ports,
+      source: input.source ?? 'manual',
+      ruleId: input.ruleId ?? null,
+    };
     const row = await this.prisma.ipBlock.upsert({
       where: { cidr: parsed.cidr },
       update: data,
@@ -114,19 +174,33 @@ export class IpBlockService {
     await this.audit.record({
       action: 'security.ip_block',
       actorId: actor.id,
-      actorType: 'USER',
+      actorType: actor.id ? 'USER' : 'SYSTEM',
+      actorLabel: actor.label ?? null,
       entityType: 'ip_block',
       entityId: row.id,
-      after: { cidr: parsed.cidr, reason: data.reason, expiresAt },
+      after: { cidr: parsed.cidr, reason: data.reason, expiresAt, level, ports, source: data.source, ruleId: data.ruleId },
     });
     await this.reload();
     return row;
   }
 
+  /** Активные блоки для краевых агентов: nginx берёт EDGE и FIREWALL, фаервол — FIREWALL. */
+  async activeForEdge(): Promise<EdgeBlock[]> {
+    const rows = await this.prisma.ipBlock.findMany({
+      where: {
+        level: { in: [IpBlockLevel.EDGE, IpBlockLevel.FIREWALL] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { cidr: true, level: true, ports: true },
+      orderBy: { cidr: 'asc' },
+    });
+    return rows;
+  }
+
   /** Массовая блокировка: каждый адрес отдельно, свой и слишком широкие отклоняются поштучно. */
   async createMany(
     values: string[],
-    params: { reason?: string; expiresInHours?: number },
+    params: Omit<IpBlockInput, 'value'>,
     actor: IpBlockActor,
   ): Promise<BulkResult> {
     const results: BulkItemResult[] = [];
@@ -169,9 +243,14 @@ export class IpBlockService {
     try {
       const rows = await this.prisma.ipBlock.findMany({
         where: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-        select: { cidr: true },
+        select: { cidr: true, ports: true },
       });
-      this.blocks = rows.map((r) => parseCidr(r.cidr)).filter((p): p is ParsedCidr => p !== null);
+      // Блок любого уровня действует и здесь — на случай, если nginx или
+      // агент фаервола не запущены. Кроме блоков только по не-веб портам.
+      this.blocks = rows
+        .filter((r) => coversWeb(r.ports))
+        .map((r) => parseCidr(r.cidr))
+        .filter((p): p is ParsedCidr => p !== null);
     } catch (error) {
       // База недоступна — оставляем прежний список, а не пускаем или режем всех.
       this.logger.warn(`список блокировок не обновлён: ${error instanceof Error ? error.message : String(error)}`);

@@ -31,6 +31,7 @@
     "db:migrate:create": "prisma migrate dev --create-only",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
+    "db:seed:test-payments": "tsx prisma/seed-test-payments.ts",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
     "db:partitions": "tsx prisma/maintenance.ts",

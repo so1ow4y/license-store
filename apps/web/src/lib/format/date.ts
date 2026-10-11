@@ -47,6 +47,28 @@ export function formatDateTime(value: string | null | undefined): string {
     : EMPTY_VALUE
 }
 
+/**
+ * «5 окт, 17:04» — короткая метка для границ периода и подсказок гистограммы.
+ * Год и секунды по запросу: в журнале событий секунды важны, на оси — нет.
+ */
+export function formatShortDateTime(
+  value: string | number | Date | null | undefined,
+  options: { seconds?: boolean; year?: boolean } = {}
+): string {
+  const date = value instanceof Date ? value : typeof value === 'number' ? new Date(value) : toDate(value)
+  if (!date || Number.isNaN(date.getTime())) return EMPTY_VALUE
+  const pattern = `d MMM${options.year ? ' yyyy' : ''}, HH:mm${options.seconds ? ':ss' : ''}`
+  return format(date, pattern, { locale: dateLocale() })
+}
+
+/** Метка оси времени: только часы, только дата или то и другое — по шагу и длине. */
+export function formatAxis(value: number, stepMs: number, spanMs: number): string {
+  const date = new Date(value)
+  if (stepMs >= 86_400_000) return format(date, 'd MMM', { locale: dateLocale() })
+  if (spanMs > 86_400_000) return format(date, 'd MMM HH:mm', { locale: dateLocale() })
+  return format(date, 'HH:mm', { locale: dateLocale() })
+}
+
 /** «5 августа 2026» — для дат выдачи и окончания, час там шума не стоит. */
 export function formatDate(value: string | null | undefined): string {
   const date = toDate(value)

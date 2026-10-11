@@ -105,10 +105,13 @@ function reasonText(reason: string): string | null {
  * готовым инструментом увода пользователя на чужой сайт сразу после ввода
  * пароля.
  */
+/** Кабинет: корень сайта — лендинг платформы, после входа ведём сюда. */
+const CABINET = '/licenses'
+
 function safeRedirect(target: string | undefined): string {
-  if (!target) return '/'
-  if (!target.startsWith('/')) return '/'
-  if (target.startsWith('//')) return '/'
+  if (!target) return CABINET
+  if (!target.startsWith('/')) return CABINET
+  if (target.startsWith('//')) return CABINET
   return target
 }
 

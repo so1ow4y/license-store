@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute, redirect } from '@tanstack/react-router'
-import { Search, ShieldCheck, X } from 'lucide-react'
+import { ExternalLink, Search, ShieldCheck, X } from 'lucide-react'
 import { z } from 'zod'
 import { has, PERMISSIONS } from '@/lib/auth/permissions'
 import { useSession } from '@/lib/auth/session'
 import { useT } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
+import { ACTIVE_ROW, CURSOR_ROW, SidePanel } from '@/components/side-panel'
+import { useListHotkeys } from '@/hooks/use-list-hotkeys'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -31,20 +34,26 @@ import {
   USER_SEARCH_FIELDS,
   USER_STATUSES,
   adminRolesQueryOptions,
+  adminUserQueryOptions,
   adminUsersQueryOptions,
   useBlockUsersIps,
   useBulkUsers,
   type UserStatus,
 } from '@/features/admin-users/api'
 import { UserStatusBadge } from '@/features/admin-users/status-badge'
+import { UserDetails } from '@/features/admin-users/user-details'
 import { formatDateTime } from '@/lib/format/date'
 
 const PAGE = 25
 const ANY = 'ANY'
 
-/** Пользователи: поиск «поле:значение» (в том числе по IP), фильтры статуса и роли. */
+/**
+ * Пользователи: поиск «поле:значение» (в том числе по IP), фильтры статуса и
+ * роли. Клик по строке открывает карточку в панели справа (`?open=`): правка,
+ * блокировка, роли, адреса — не уходя из списка.
+ */
 export const Route = createFileRoute('/_app/admin/users/')({
-  validateSearch: z.object({ q: z.string().max(1000).optional() }),
+  validateSearch: z.object({ q: z.string().max(1000).optional(), open: z.string().uuid().optional() }),
   beforeLoad: ({ context }) => {
     if (!has(context.me.permissions, PERMISSIONS.USERS_READ_ANY)) throw redirect({ to: '/403' })
   },
@@ -54,9 +63,13 @@ export const Route = createFileRoute('/_app/admin/users/')({
 function AdminUsersPage() {
   const t = useT()
   const { can } = useSession()
-  const { q: urlQ } = Route.useSearch()
+  const { q: urlQ, open } = Route.useSearch()
   const navigate = Route.useNavigate()
   const q = urlQ ?? ''
+
+  function openUser(id: string | null) {
+    void navigate({ search: (prev) => ({ ...prev, open: id ?? undefined }), replace: true })
+  }
   const [draft, setDraft] = useState(q)
   const [status, setStatus] = useState<UserStatus | typeof ANY>(ANY)
   const [role, setRole] = useState<string>(ANY)
@@ -104,13 +117,19 @@ function AdminUsersPage() {
   }
 
   function search(next: string) {
-    void navigate({ search: { q: next.trim() || undefined } })
+    void navigate({ search: (prev) => ({ ...prev, q: next.trim() || undefined }) })
   }
-
-  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
 
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
+  const cursor = useListHotkeys({
+    ids: items.map((u) => u.id),
+    openedId: open ?? null,
+    onOpen: openUser,
+    onClose: () => openUser(null),
+  })
+
+  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
 
   return (
     <div className='space-y-6'>
@@ -236,24 +255,26 @@ function AdminUsersPage() {
               </TableHeader>
               <TableBody>
                 {items.map((user) => (
-                  <TableRow key={user.id} data-state={selection.has(user.id) ? 'selected' : undefined}>
+                  <TableRow
+                    key={user.id}
+                    data-row-id={user.id}
+                    data-state={selection.has(user.id) ? 'selected' : undefined}
+                    className={cn('cursor-pointer', open === user.id && ACTIVE_ROW, cursor === user.id && CURSOR_ROW)}
+                    onClick={() => openUser(open === user.id ? null : user.id)}
+                  >
                     {canSelect && (
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <RowCheckbox selection={selection} id={user.id} />
                       </TableCell>
                     )}
                     <TableCell>
-                      <Link
-                        to='/admin/users/$userId'
-                        params={{ userId: user.id }}
-                        className='inline-flex items-center gap-1 font-medium underline-offset-4 hover:underline'
-                      >
+                      <span className='inline-flex items-center gap-1 font-medium'>
                         {user.username}
                         {user.twoFactorEnabled && <ShieldCheck className='size-3.5 text-muted-foreground' />}
-                      </Link>
+                      </span>
                       <span className='block text-xs text-muted-foreground'>{user.email ?? '—'}</span>
                     </TableCell>
-                    <TableCell className='space-x-1'>
+                    <TableCell className='space-x-1' onClick={(e) => e.stopPropagation()}>
                       {user.roles.map((r) => (
                         <button key={r.slug} type='button' onClick={() => search(withTerm(q, 'role', r.slug))}>
                           <Badge variant='outline'>{r.name}</Badge>
@@ -264,7 +285,7 @@ function AdminUsersPage() {
                       <UserStatusBadge status={user.status} />
                     </TableCell>
                     {canSeeIps && (
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <div className='flex max-w-64 flex-wrap gap-1'>
                           {(user.ips?.recent ?? []).map((ip) => (
                             <button
@@ -327,6 +348,40 @@ function AdminUsersPage() {
         error={bulkMutation.error}
         onConfirm={runBulk}
       />
+
+      <UserPanel userId={open ?? null} onClose={() => openUser(null)} />
     </div>
+  )
+}
+
+/** Карточка пользователя в панели справа; «открыть страницей» — для прямой ссылки. */
+function UserPanel({ userId, onClose }: { userId: string | null; onClose: () => void }) {
+  const t = useT()
+  const query = useQuery({ ...adminUserQueryOptions(userId ?? ''), enabled: Boolean(userId) })
+  if (!userId) return null
+  return (
+    <SidePanel
+      open
+      onClose={onClose}
+      title={query.data?.username ?? t('common.state.loading')}
+      subtitle={query.data?.email ?? undefined}
+      badges={query.data && <UserStatusBadge status={query.data.status} />}
+      actions={
+        <Button asChild variant='ghost' size='icon' title={t('panel.openPage')}>
+          <Link to='/admin/users/$userId' params={{ userId }}>
+            <ExternalLink className='size-4' />
+            <span className='sr-only'>{t('panel.openPage')}</span>
+          </Link>
+        </Button>
+      }
+    >
+      {query.isPending ? (
+        <Skeleton className='h-64 w-full' />
+      ) : query.isError ? (
+        <AdminErrorText error={query.error} />
+      ) : (
+        <UserDetails user={query.data} />
+      )}
+    </SidePanel>
   )
 }

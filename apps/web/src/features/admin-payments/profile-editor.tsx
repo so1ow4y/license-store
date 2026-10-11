@@ -13,6 +13,7 @@ import {
   type MethodConfig,
   type PaymentProfile,
   type ProfileProvider,
+  type ProfileScope,
 } from './api'
 import { CryptoFields, YookassaFields, newWallet } from './method-card'
 
@@ -33,12 +34,15 @@ export function ProfileEditor({
   profile,
   provider,
   productId,
+  scope,
   onSaved,
   onCancel,
 }: {
   profile?: PaymentProfile
   provider: ProfileProvider
   productId?: string
+  /** Раздел новых реквизитов: товары (по умолчанию) или реселлеры. */
+  scope?: ProfileScope
   onSaved?: (profile: PaymentProfile) => void
   onCancel?: () => void
 }) {
@@ -57,7 +61,7 @@ export function ProfileEditor({
     const changed = Object.fromEntries(Object.entries(secrets).filter(([, v]) => v.trim() !== ''))
     save.mutate(
       {
-        ...(profile ? {} : { provider, productId: productId ?? null }),
+        ...(profile ? {} : { provider, productId: productId ?? null, ...(scope ? { scope } : {}) }),
         name: name.trim(),
         config,
         secrets: { ...changed, ...extraSecrets },

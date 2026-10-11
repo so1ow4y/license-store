@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as PublicRouteImport } from './routes/_public'
 import { Route as errors401RouteImport } from './routes/(errors)/401'
@@ -16,9 +17,9 @@ import { Route as errors403RouteImport } from './routes/(errors)/403'
 import { Route as errors404RouteImport } from './routes/(errors)/404'
 import { Route as errors500RouteImport } from './routes/(errors)/500'
 import { Route as errors503RouteImport } from './routes/(errors)/503'
-import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppActivateRouteImport } from './routes/_app/activate'
 import { Route as AppCatalogRouteImport } from './routes/_app/catalog'
+import { Route as AppDownloadsRouteImport } from './routes/_app/downloads'
 import { Route as AppResellerRouteImport } from './routes/_app/reseller'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as PublicForgotPasswordRouteImport } from './routes/_public/forgot-password'
@@ -29,12 +30,14 @@ import { Route as PublicVerifyEmailRouteImport } from './routes/_public/verify-e
 import { Route as PublicVerifyEmailChangeRouteImport } from './routes/_public/verify-email-change'
 import { Route as AppAccountTelegramRouteImport } from './routes/_app/account.telegram'
 import { Route as AppAdminAuditRouteImport } from './routes/_app/admin.audit'
+import { Route as AppAdminLauncherRouteImport } from './routes/_app/admin.launcher'
 import { Route as AppAdminLicensesRouteImport } from './routes/_app/admin.licenses'
 import { Route as AppAdminOrdersRouteImport } from './routes/_app/admin.orders'
 import { Route as AppAdminPaymentsRouteImport } from './routes/_app/admin.payments'
 import { Route as AppAdminResellersRouteImport } from './routes/_app/admin.resellers'
 import { Route as AppAdminSecurityRouteImport } from './routes/_app/admin.security'
 import { Route as AppAdminSettingsRouteImport } from './routes/_app/admin.settings'
+import { Route as AppLicensesIndexRouteImport } from './routes/_app/licenses.index'
 import { Route as AppLicensesLicenseIdRouteImport } from './routes/_app/licenses.$licenseId'
 import { Route as AppOrdersIndexRouteImport } from './routes/_app/orders.index'
 import { Route as AppOrdersOrderIdRouteImport } from './routes/_app/orders.$orderId'
@@ -42,18 +45,31 @@ import { Route as AppSettingsIndexRouteImport } from './routes/_app/settings.ind
 import { Route as AppSettingsAccessRouteImport } from './routes/_app/settings.access'
 import { Route as AppSettingsAppearanceRouteImport } from './routes/_app/settings.appearance'
 import { Route as AppSettingsProfileRouteImport } from './routes/_app/settings.profile'
+import { Route as AppSettingsRolesRouteImport } from './routes/_app/settings.roles'
 import { Route as AppSettingsTelegramRouteImport } from './routes/_app/settings.telegram'
 import { Route as PublicRegisterCheckEmailRouteImport } from './routes/_public/register_.check-email'
 import { Route as PublicRegisterKeyRouteImport } from './routes/_public/register_.key'
 import { Route as AppAdminBillingPendingRouteImport } from './routes/_app/admin.billing.pending'
 import { Route as AppAdminProductsIndexRouteImport } from './routes/_app/admin.products.index'
 import { Route as AppAdminProductsProductIdRouteImport } from './routes/_app/admin.products.$productId'
+import { Route as AppAdminSecurityIndexRouteImport } from './routes/_app/admin.security.index'
+import { Route as AppAdminSecurityBlocksRouteImport } from './routes/_app/admin.security.blocks'
+import { Route as AppAdminSecurityEventsRouteImport } from './routes/_app/admin.security.events'
+import { Route as AppAdminSecurityHitsRouteImport } from './routes/_app/admin.security.hits'
+import { Route as AppAdminSecurityLoginsRouteImport } from './routes/_app/admin.security.logins'
+import { Route as AppAdminSecurityRulesRouteImport } from './routes/_app/admin.security.rules'
+import { Route as AppAdminSecurityTrafficRouteImport } from './routes/_app/admin.security.traffic'
 import { Route as AppAdminUsersIndexRouteImport } from './routes/_app/admin.users.index'
 import { Route as AppAdminUsersUserIdRouteImport } from './routes/_app/admin.users.$userId'
 import { Route as AppSettingsSecurity2faRouteImport } from './routes/_app/settings.security.2fa'
 import { Route as AppSettingsSecurityLoginsRouteImport } from './routes/_app/settings.security.logins'
 import { Route as AppSettingsSecurityPasswordRouteImport } from './routes/_app/settings.security.password'
 
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppRoute = AppRouteImport.update({
   id: '/_app',
   getParentRoute: () => rootRouteImport,
@@ -87,11 +103,6 @@ const errors503Route = errors503RouteImport.update({
   path: '/503',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppIndexRoute = AppIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppActivateRoute = AppActivateRouteImport.update({
   id: '/activate',
   path: '/activate',
@@ -100,6 +111,11 @@ const AppActivateRoute = AppActivateRouteImport.update({
 const AppCatalogRoute = AppCatalogRouteImport.update({
   id: '/catalog',
   path: '/catalog',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDownloadsRoute = AppDownloadsRouteImport.update({
+  id: '/downloads',
+  path: '/downloads',
   getParentRoute: () => AppRoute,
 } as any)
 const AppResellerRoute = AppResellerRouteImport.update({
@@ -152,6 +168,11 @@ const AppAdminAuditRoute = AppAdminAuditRouteImport.update({
   path: '/admin/audit',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAdminLauncherRoute = AppAdminLauncherRouteImport.update({
+  id: '/admin/launcher',
+  path: '/admin/launcher',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAdminLicensesRoute = AppAdminLicensesRouteImport.update({
   id: '/admin/licenses',
   path: '/admin/licenses',
@@ -180,6 +201,11 @@ const AppAdminSecurityRoute = AppAdminSecurityRouteImport.update({
 const AppAdminSettingsRoute = AppAdminSettingsRouteImport.update({
   id: '/admin/settings',
   path: '/admin/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLicensesIndexRoute = AppLicensesIndexRouteImport.update({
+  id: '/licenses/',
+  path: '/licenses/',
   getParentRoute: () => AppRoute,
 } as any)
 const AppLicensesLicenseIdRoute = AppLicensesLicenseIdRouteImport.update({
@@ -217,6 +243,11 @@ const AppSettingsProfileRoute = AppSettingsProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => AppSettingsRoute,
 } as any)
+const AppSettingsRolesRoute = AppSettingsRolesRouteImport.update({
+  id: '/roles',
+  path: '/roles',
+  getParentRoute: () => AppSettingsRoute,
+} as any)
 const AppSettingsTelegramRoute = AppSettingsTelegramRouteImport.update({
   id: '/telegram',
   path: '/telegram',
@@ -249,6 +280,41 @@ const AppAdminProductsProductIdRoute =
     path: '/admin/products/$productId',
     getParentRoute: () => AppRoute,
   } as any)
+const AppAdminSecurityIndexRoute = AppAdminSecurityIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityBlocksRoute = AppAdminSecurityBlocksRouteImport.update({
+  id: '/blocks',
+  path: '/blocks',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityEventsRoute = AppAdminSecurityEventsRouteImport.update({
+  id: '/events',
+  path: '/events',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityHitsRoute = AppAdminSecurityHitsRouteImport.update({
+  id: '/hits',
+  path: '/hits',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityLoginsRoute = AppAdminSecurityLoginsRouteImport.update({
+  id: '/logins',
+  path: '/logins',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityRulesRoute = AppAdminSecurityRulesRouteImport.update({
+  id: '/rules',
+  path: '/rules',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
+const AppAdminSecurityTrafficRoute = AppAdminSecurityTrafficRouteImport.update({
+  id: '/traffic',
+  path: '/traffic',
+  getParentRoute: () => AppAdminSecurityRoute,
+} as any)
 const AppAdminUsersIndexRoute = AppAdminUsersIndexRouteImport.update({
   id: '/admin/users/',
   path: '/admin/users/',
@@ -278,7 +344,7 @@ const AppSettingsSecurityPasswordRoute =
   } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof AppIndexRoute
+  '/': typeof IndexRoute
   '/401': typeof errors401Route
   '/403': typeof errors403Route
   '/404': typeof errors404Route
@@ -286,6 +352,7 @@ export interface FileRoutesByFullPath {
   '/503': typeof errors503Route
   '/activate': typeof AppActivateRoute
   '/catalog': typeof AppCatalogRoute
+  '/downloads': typeof AppDownloadsRoute
   '/reseller': typeof AppResellerRoute
   '/settings': typeof AppSettingsRouteWithChildren
   '/forgot-password': typeof PublicForgotPasswordRoute
@@ -296,33 +363,43 @@ export interface FileRoutesByFullPath {
   '/verify-email-change': typeof PublicVerifyEmailChangeRoute
   '/account/telegram': typeof AppAccountTelegramRoute
   '/admin/audit': typeof AppAdminAuditRoute
+  '/admin/launcher': typeof AppAdminLauncherRoute
   '/admin/licenses': typeof AppAdminLicensesRoute
   '/admin/orders': typeof AppAdminOrdersRoute
   '/admin/payments': typeof AppAdminPaymentsRoute
   '/admin/resellers': typeof AppAdminResellersRoute
-  '/admin/security': typeof AppAdminSecurityRoute
+  '/admin/security': typeof AppAdminSecurityRouteWithChildren
   '/admin/settings': typeof AppAdminSettingsRoute
   '/licenses/$licenseId': typeof AppLicensesLicenseIdRoute
   '/orders/$orderId': typeof AppOrdersOrderIdRoute
   '/settings/access': typeof AppSettingsAccessRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/profile': typeof AppSettingsProfileRoute
+  '/settings/roles': typeof AppSettingsRolesRoute
   '/settings/telegram': typeof AppSettingsTelegramRoute
   '/register/check-email': typeof PublicRegisterCheckEmailRoute
   '/register/key': typeof PublicRegisterKeyRoute
+  '/licenses/': typeof AppLicensesIndexRoute
   '/orders/': typeof AppOrdersIndexRoute
   '/settings/': typeof AppSettingsIndexRoute
   '/admin/billing/pending': typeof AppAdminBillingPendingRoute
   '/admin/products/$productId': typeof AppAdminProductsProductIdRoute
+  '/admin/security/blocks': typeof AppAdminSecurityBlocksRoute
+  '/admin/security/events': typeof AppAdminSecurityEventsRoute
+  '/admin/security/hits': typeof AppAdminSecurityHitsRoute
+  '/admin/security/logins': typeof AppAdminSecurityLoginsRoute
+  '/admin/security/rules': typeof AppAdminSecurityRulesRoute
+  '/admin/security/traffic': typeof AppAdminSecurityTrafficRoute
   '/admin/users/$userId': typeof AppAdminUsersUserIdRoute
   '/settings/security/2fa': typeof AppSettingsSecurity2faRoute
   '/settings/security/logins': typeof AppSettingsSecurityLoginsRoute
   '/settings/security/password': typeof AppSettingsSecurityPasswordRoute
   '/admin/products/': typeof AppAdminProductsIndexRoute
+  '/admin/security/': typeof AppAdminSecurityIndexRoute
   '/admin/users/': typeof AppAdminUsersIndexRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof AppIndexRoute
+  '/': typeof IndexRoute
   '/401': typeof errors401Route
   '/403': typeof errors403Route
   '/404': typeof errors404Route
@@ -330,6 +407,7 @@ export interface FileRoutesByTo {
   '/503': typeof errors503Route
   '/activate': typeof AppActivateRoute
   '/catalog': typeof AppCatalogRoute
+  '/downloads': typeof AppDownloadsRoute
   '/reseller': typeof AppResellerRoute
   '/forgot-password': typeof PublicForgotPasswordRoute
   '/login': typeof PublicLoginRoute
@@ -339,33 +417,43 @@ export interface FileRoutesByTo {
   '/verify-email-change': typeof PublicVerifyEmailChangeRoute
   '/account/telegram': typeof AppAccountTelegramRoute
   '/admin/audit': typeof AppAdminAuditRoute
+  '/admin/launcher': typeof AppAdminLauncherRoute
   '/admin/licenses': typeof AppAdminLicensesRoute
   '/admin/orders': typeof AppAdminOrdersRoute
   '/admin/payments': typeof AppAdminPaymentsRoute
   '/admin/resellers': typeof AppAdminResellersRoute
-  '/admin/security': typeof AppAdminSecurityRoute
   '/admin/settings': typeof AppAdminSettingsRoute
   '/licenses/$licenseId': typeof AppLicensesLicenseIdRoute
   '/orders/$orderId': typeof AppOrdersOrderIdRoute
   '/settings/access': typeof AppSettingsAccessRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/profile': typeof AppSettingsProfileRoute
+  '/settings/roles': typeof AppSettingsRolesRoute
   '/settings/telegram': typeof AppSettingsTelegramRoute
   '/register/check-email': typeof PublicRegisterCheckEmailRoute
   '/register/key': typeof PublicRegisterKeyRoute
+  '/licenses': typeof AppLicensesIndexRoute
   '/orders': typeof AppOrdersIndexRoute
   '/settings': typeof AppSettingsIndexRoute
   '/admin/billing/pending': typeof AppAdminBillingPendingRoute
   '/admin/products/$productId': typeof AppAdminProductsProductIdRoute
+  '/admin/security/blocks': typeof AppAdminSecurityBlocksRoute
+  '/admin/security/events': typeof AppAdminSecurityEventsRoute
+  '/admin/security/hits': typeof AppAdminSecurityHitsRoute
+  '/admin/security/logins': typeof AppAdminSecurityLoginsRoute
+  '/admin/security/rules': typeof AppAdminSecurityRulesRoute
+  '/admin/security/traffic': typeof AppAdminSecurityTrafficRoute
   '/admin/users/$userId': typeof AppAdminUsersUserIdRoute
   '/settings/security/2fa': typeof AppSettingsSecurity2faRoute
   '/settings/security/logins': typeof AppSettingsSecurityLoginsRoute
   '/settings/security/password': typeof AppSettingsSecurityPasswordRoute
   '/admin/products': typeof AppAdminProductsIndexRoute
+  '/admin/security': typeof AppAdminSecurityIndexRoute
   '/admin/users': typeof AppAdminUsersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/_public': typeof PublicRouteWithChildren
   '/(errors)/401': typeof errors401Route
@@ -375,6 +463,7 @@ export interface FileRoutesById {
   '/(errors)/503': typeof errors503Route
   '/_app/activate': typeof AppActivateRoute
   '/_app/catalog': typeof AppCatalogRoute
+  '/_app/downloads': typeof AppDownloadsRoute
   '/_app/reseller': typeof AppResellerRoute
   '/_app/settings': typeof AppSettingsRouteWithChildren
   '/_public/forgot-password': typeof PublicForgotPasswordRoute
@@ -383,32 +472,41 @@ export interface FileRoutesById {
   '/_public/reset-password': typeof PublicResetPasswordRoute
   '/_public/verify-email': typeof PublicVerifyEmailRoute
   '/_public/verify-email-change': typeof PublicVerifyEmailChangeRoute
-  '/_app/': typeof AppIndexRoute
   '/_app/account/telegram': typeof AppAccountTelegramRoute
   '/_app/admin/audit': typeof AppAdminAuditRoute
+  '/_app/admin/launcher': typeof AppAdminLauncherRoute
   '/_app/admin/licenses': typeof AppAdminLicensesRoute
   '/_app/admin/orders': typeof AppAdminOrdersRoute
   '/_app/admin/payments': typeof AppAdminPaymentsRoute
   '/_app/admin/resellers': typeof AppAdminResellersRoute
-  '/_app/admin/security': typeof AppAdminSecurityRoute
+  '/_app/admin/security': typeof AppAdminSecurityRouteWithChildren
   '/_app/admin/settings': typeof AppAdminSettingsRoute
   '/_app/licenses/$licenseId': typeof AppLicensesLicenseIdRoute
   '/_app/orders/$orderId': typeof AppOrdersOrderIdRoute
   '/_app/settings/access': typeof AppSettingsAccessRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/profile': typeof AppSettingsProfileRoute
+  '/_app/settings/roles': typeof AppSettingsRolesRoute
   '/_app/settings/telegram': typeof AppSettingsTelegramRoute
   '/_public/register_/check-email': typeof PublicRegisterCheckEmailRoute
   '/_public/register_/key': typeof PublicRegisterKeyRoute
+  '/_app/licenses/': typeof AppLicensesIndexRoute
   '/_app/orders/': typeof AppOrdersIndexRoute
   '/_app/settings/': typeof AppSettingsIndexRoute
   '/_app/admin/billing/pending': typeof AppAdminBillingPendingRoute
   '/_app/admin/products/$productId': typeof AppAdminProductsProductIdRoute
+  '/_app/admin/security/blocks': typeof AppAdminSecurityBlocksRoute
+  '/_app/admin/security/events': typeof AppAdminSecurityEventsRoute
+  '/_app/admin/security/hits': typeof AppAdminSecurityHitsRoute
+  '/_app/admin/security/logins': typeof AppAdminSecurityLoginsRoute
+  '/_app/admin/security/rules': typeof AppAdminSecurityRulesRoute
+  '/_app/admin/security/traffic': typeof AppAdminSecurityTrafficRoute
   '/_app/admin/users/$userId': typeof AppAdminUsersUserIdRoute
   '/_app/settings/security/2fa': typeof AppSettingsSecurity2faRoute
   '/_app/settings/security/logins': typeof AppSettingsSecurityLoginsRoute
   '/_app/settings/security/password': typeof AppSettingsSecurityPasswordRoute
   '/_app/admin/products/': typeof AppAdminProductsIndexRoute
+  '/_app/admin/security/': typeof AppAdminSecurityIndexRoute
   '/_app/admin/users/': typeof AppAdminUsersIndexRoute
 }
 export interface FileRouteTypes {
@@ -422,6 +520,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/activate'
     | '/catalog'
+    | '/downloads'
     | '/reseller'
     | '/settings'
     | '/forgot-password'
@@ -432,6 +531,7 @@ export interface FileRouteTypes {
     | '/verify-email-change'
     | '/account/telegram'
     | '/admin/audit'
+    | '/admin/launcher'
     | '/admin/licenses'
     | '/admin/orders'
     | '/admin/payments'
@@ -443,18 +543,27 @@ export interface FileRouteTypes {
     | '/settings/access'
     | '/settings/appearance'
     | '/settings/profile'
+    | '/settings/roles'
     | '/settings/telegram'
     | '/register/check-email'
     | '/register/key'
+    | '/licenses/'
     | '/orders/'
     | '/settings/'
     | '/admin/billing/pending'
     | '/admin/products/$productId'
+    | '/admin/security/blocks'
+    | '/admin/security/events'
+    | '/admin/security/hits'
+    | '/admin/security/logins'
+    | '/admin/security/rules'
+    | '/admin/security/traffic'
     | '/admin/users/$userId'
     | '/settings/security/2fa'
     | '/settings/security/logins'
     | '/settings/security/password'
     | '/admin/products/'
+    | '/admin/security/'
     | '/admin/users/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -466,6 +575,7 @@ export interface FileRouteTypes {
     | '/503'
     | '/activate'
     | '/catalog'
+    | '/downloads'
     | '/reseller'
     | '/forgot-password'
     | '/login'
@@ -475,32 +585,42 @@ export interface FileRouteTypes {
     | '/verify-email-change'
     | '/account/telegram'
     | '/admin/audit'
+    | '/admin/launcher'
     | '/admin/licenses'
     | '/admin/orders'
     | '/admin/payments'
     | '/admin/resellers'
-    | '/admin/security'
     | '/admin/settings'
     | '/licenses/$licenseId'
     | '/orders/$orderId'
     | '/settings/access'
     | '/settings/appearance'
     | '/settings/profile'
+    | '/settings/roles'
     | '/settings/telegram'
     | '/register/check-email'
     | '/register/key'
+    | '/licenses'
     | '/orders'
     | '/settings'
     | '/admin/billing/pending'
     | '/admin/products/$productId'
+    | '/admin/security/blocks'
+    | '/admin/security/events'
+    | '/admin/security/hits'
+    | '/admin/security/logins'
+    | '/admin/security/rules'
+    | '/admin/security/traffic'
     | '/admin/users/$userId'
     | '/settings/security/2fa'
     | '/settings/security/logins'
     | '/settings/security/password'
     | '/admin/products'
+    | '/admin/security'
     | '/admin/users'
   id:
     | '__root__'
+    | '/'
     | '/_app'
     | '/_public'
     | '/(errors)/401'
@@ -510,6 +630,7 @@ export interface FileRouteTypes {
     | '/(errors)/503'
     | '/_app/activate'
     | '/_app/catalog'
+    | '/_app/downloads'
     | '/_app/reseller'
     | '/_app/settings'
     | '/_public/forgot-password'
@@ -518,9 +639,9 @@ export interface FileRouteTypes {
     | '/_public/reset-password'
     | '/_public/verify-email'
     | '/_public/verify-email-change'
-    | '/_app/'
     | '/_app/account/telegram'
     | '/_app/admin/audit'
+    | '/_app/admin/launcher'
     | '/_app/admin/licenses'
     | '/_app/admin/orders'
     | '/_app/admin/payments'
@@ -532,22 +653,32 @@ export interface FileRouteTypes {
     | '/_app/settings/access'
     | '/_app/settings/appearance'
     | '/_app/settings/profile'
+    | '/_app/settings/roles'
     | '/_app/settings/telegram'
     | '/_public/register_/check-email'
     | '/_public/register_/key'
+    | '/_app/licenses/'
     | '/_app/orders/'
     | '/_app/settings/'
     | '/_app/admin/billing/pending'
     | '/_app/admin/products/$productId'
+    | '/_app/admin/security/blocks'
+    | '/_app/admin/security/events'
+    | '/_app/admin/security/hits'
+    | '/_app/admin/security/logins'
+    | '/_app/admin/security/rules'
+    | '/_app/admin/security/traffic'
     | '/_app/admin/users/$userId'
     | '/_app/settings/security/2fa'
     | '/_app/settings/security/logins'
     | '/_app/settings/security/password'
     | '/_app/admin/products/'
+    | '/_app/admin/security/'
     | '/_app/admin/users/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
   PublicRoute: typeof PublicRouteWithChildren
   errors401Route: typeof errors401Route
@@ -559,6 +690,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app': {
       id: '/_app'
       path: ''
@@ -608,13 +746,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof errors503RouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/': {
-      id: '/_app/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof AppIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/activate': {
       id: '/_app/activate'
       path: '/activate'
@@ -627,6 +758,13 @@ declare module '@tanstack/react-router' {
       path: '/catalog'
       fullPath: '/catalog'
       preLoaderRoute: typeof AppCatalogRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/downloads': {
+      id: '/_app/downloads'
+      path: '/downloads'
+      fullPath: '/downloads'
+      preLoaderRoute: typeof AppDownloadsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/reseller': {
@@ -699,6 +837,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAdminAuditRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/admin/launcher': {
+      id: '/_app/admin/launcher'
+      path: '/admin/launcher'
+      fullPath: '/admin/launcher'
+      preLoaderRoute: typeof AppAdminLauncherRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/admin/licenses': {
       id: '/_app/admin/licenses'
       path: '/admin/licenses'
@@ -739,6 +884,13 @@ declare module '@tanstack/react-router' {
       path: '/admin/settings'
       fullPath: '/admin/settings'
       preLoaderRoute: typeof AppAdminSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/licenses/': {
+      id: '/_app/licenses/'
+      path: '/licenses'
+      fullPath: '/licenses/'
+      preLoaderRoute: typeof AppLicensesIndexRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/licenses/$licenseId': {
@@ -790,6 +942,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsProfileRouteImport
       parentRoute: typeof AppSettingsRoute
     }
+    '/_app/settings/roles': {
+      id: '/_app/settings/roles'
+      path: '/roles'
+      fullPath: '/settings/roles'
+      preLoaderRoute: typeof AppSettingsRolesRouteImport
+      parentRoute: typeof AppSettingsRoute
+    }
     '/_app/settings/telegram': {
       id: '/_app/settings/telegram'
       path: '/telegram'
@@ -831,6 +990,55 @@ declare module '@tanstack/react-router' {
       fullPath: '/admin/products/$productId'
       preLoaderRoute: typeof AppAdminProductsProductIdRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/_app/admin/security/': {
+      id: '/_app/admin/security/'
+      path: '/'
+      fullPath: '/admin/security/'
+      preLoaderRoute: typeof AppAdminSecurityIndexRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/blocks': {
+      id: '/_app/admin/security/blocks'
+      path: '/blocks'
+      fullPath: '/admin/security/blocks'
+      preLoaderRoute: typeof AppAdminSecurityBlocksRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/events': {
+      id: '/_app/admin/security/events'
+      path: '/events'
+      fullPath: '/admin/security/events'
+      preLoaderRoute: typeof AppAdminSecurityEventsRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/hits': {
+      id: '/_app/admin/security/hits'
+      path: '/hits'
+      fullPath: '/admin/security/hits'
+      preLoaderRoute: typeof AppAdminSecurityHitsRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/logins': {
+      id: '/_app/admin/security/logins'
+      path: '/logins'
+      fullPath: '/admin/security/logins'
+      preLoaderRoute: typeof AppAdminSecurityLoginsRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/rules': {
+      id: '/_app/admin/security/rules'
+      path: '/rules'
+      fullPath: '/admin/security/rules'
+      preLoaderRoute: typeof AppAdminSecurityRulesRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
+    }
+    '/_app/admin/security/traffic': {
+      id: '/_app/admin/security/traffic'
+      path: '/traffic'
+      fullPath: '/admin/security/traffic'
+      preLoaderRoute: typeof AppAdminSecurityTrafficRouteImport
+      parentRoute: typeof AppAdminSecurityRoute
     }
     '/_app/admin/users/': {
       id: '/_app/admin/users/'
@@ -874,6 +1082,7 @@ interface AppSettingsRouteChildren {
   AppSettingsAccessRoute: typeof AppSettingsAccessRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
   AppSettingsProfileRoute: typeof AppSettingsProfileRoute
+  AppSettingsRolesRoute: typeof AppSettingsRolesRoute
   AppSettingsTelegramRoute: typeof AppSettingsTelegramRoute
   AppSettingsIndexRoute: typeof AppSettingsIndexRoute
   AppSettingsSecurity2faRoute: typeof AppSettingsSecurity2faRoute
@@ -885,6 +1094,7 @@ const AppSettingsRouteChildren: AppSettingsRouteChildren = {
   AppSettingsAccessRoute: AppSettingsAccessRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
   AppSettingsProfileRoute: AppSettingsProfileRoute,
+  AppSettingsRolesRoute: AppSettingsRolesRoute,
   AppSettingsTelegramRoute: AppSettingsTelegramRoute,
   AppSettingsIndexRoute: AppSettingsIndexRoute,
   AppSettingsSecurity2faRoute: AppSettingsSecurity2faRoute,
@@ -896,22 +1106,47 @@ const AppSettingsRouteWithChildren = AppSettingsRoute._addFileChildren(
   AppSettingsRouteChildren,
 )
 
+interface AppAdminSecurityRouteChildren {
+  AppAdminSecurityBlocksRoute: typeof AppAdminSecurityBlocksRoute
+  AppAdminSecurityEventsRoute: typeof AppAdminSecurityEventsRoute
+  AppAdminSecurityHitsRoute: typeof AppAdminSecurityHitsRoute
+  AppAdminSecurityLoginsRoute: typeof AppAdminSecurityLoginsRoute
+  AppAdminSecurityRulesRoute: typeof AppAdminSecurityRulesRoute
+  AppAdminSecurityTrafficRoute: typeof AppAdminSecurityTrafficRoute
+  AppAdminSecurityIndexRoute: typeof AppAdminSecurityIndexRoute
+}
+
+const AppAdminSecurityRouteChildren: AppAdminSecurityRouteChildren = {
+  AppAdminSecurityBlocksRoute: AppAdminSecurityBlocksRoute,
+  AppAdminSecurityEventsRoute: AppAdminSecurityEventsRoute,
+  AppAdminSecurityHitsRoute: AppAdminSecurityHitsRoute,
+  AppAdminSecurityLoginsRoute: AppAdminSecurityLoginsRoute,
+  AppAdminSecurityRulesRoute: AppAdminSecurityRulesRoute,
+  AppAdminSecurityTrafficRoute: AppAdminSecurityTrafficRoute,
+  AppAdminSecurityIndexRoute: AppAdminSecurityIndexRoute,
+}
+
+const AppAdminSecurityRouteWithChildren =
+  AppAdminSecurityRoute._addFileChildren(AppAdminSecurityRouteChildren)
+
 interface AppRouteChildren {
   AppActivateRoute: typeof AppActivateRoute
   AppCatalogRoute: typeof AppCatalogRoute
+  AppDownloadsRoute: typeof AppDownloadsRoute
   AppResellerRoute: typeof AppResellerRoute
   AppSettingsRoute: typeof AppSettingsRouteWithChildren
-  AppIndexRoute: typeof AppIndexRoute
   AppAccountTelegramRoute: typeof AppAccountTelegramRoute
   AppAdminAuditRoute: typeof AppAdminAuditRoute
+  AppAdminLauncherRoute: typeof AppAdminLauncherRoute
   AppAdminLicensesRoute: typeof AppAdminLicensesRoute
   AppAdminOrdersRoute: typeof AppAdminOrdersRoute
   AppAdminPaymentsRoute: typeof AppAdminPaymentsRoute
   AppAdminResellersRoute: typeof AppAdminResellersRoute
-  AppAdminSecurityRoute: typeof AppAdminSecurityRoute
+  AppAdminSecurityRoute: typeof AppAdminSecurityRouteWithChildren
   AppAdminSettingsRoute: typeof AppAdminSettingsRoute
   AppLicensesLicenseIdRoute: typeof AppLicensesLicenseIdRoute
   AppOrdersOrderIdRoute: typeof AppOrdersOrderIdRoute
+  AppLicensesIndexRoute: typeof AppLicensesIndexRoute
   AppOrdersIndexRoute: typeof AppOrdersIndexRoute
   AppAdminBillingPendingRoute: typeof AppAdminBillingPendingRoute
   AppAdminProductsProductIdRoute: typeof AppAdminProductsProductIdRoute
@@ -923,19 +1158,21 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppActivateRoute: AppActivateRoute,
   AppCatalogRoute: AppCatalogRoute,
+  AppDownloadsRoute: AppDownloadsRoute,
   AppResellerRoute: AppResellerRoute,
   AppSettingsRoute: AppSettingsRouteWithChildren,
-  AppIndexRoute: AppIndexRoute,
   AppAccountTelegramRoute: AppAccountTelegramRoute,
   AppAdminAuditRoute: AppAdminAuditRoute,
+  AppAdminLauncherRoute: AppAdminLauncherRoute,
   AppAdminLicensesRoute: AppAdminLicensesRoute,
   AppAdminOrdersRoute: AppAdminOrdersRoute,
   AppAdminPaymentsRoute: AppAdminPaymentsRoute,
   AppAdminResellersRoute: AppAdminResellersRoute,
-  AppAdminSecurityRoute: AppAdminSecurityRoute,
+  AppAdminSecurityRoute: AppAdminSecurityRouteWithChildren,
   AppAdminSettingsRoute: AppAdminSettingsRoute,
   AppLicensesLicenseIdRoute: AppLicensesLicenseIdRoute,
   AppOrdersOrderIdRoute: AppOrdersOrderIdRoute,
+  AppLicensesIndexRoute: AppLicensesIndexRoute,
   AppOrdersIndexRoute: AppOrdersIndexRoute,
   AppAdminBillingPendingRoute: AppAdminBillingPendingRoute,
   AppAdminProductsProductIdRoute: AppAdminProductsProductIdRoute,
@@ -972,6 +1209,7 @@ const PublicRouteWithChildren =
   PublicRoute._addFileChildren(PublicRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
   PublicRoute: PublicRouteWithChildren,
   errors401Route: errors401Route,

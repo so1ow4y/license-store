@@ -10,7 +10,20 @@ type BaseNavItem = {
  * типизацию. `search` — вкладка страницы (`?tab=…`): пункт «Ключи» ведёт
  * на панель реселлера сразу во вкладку ключей.
  */
-type NavTarget = { url: LinkProps['to']; search?: Record<string, string> }
+type NavTarget = {
+  url: LinkProps['to']
+  search?: Record<string, string>
+  /**
+   * Префикс адреса, при котором пункт тоже считается открытым: «Безопасность»
+   * ведёт на пароль, но подсвечена и на странице 2FA (`/settings/security`).
+   */
+  match?: string
+  /**
+   * Только точный адрес, без вложенных: «Дашборды» ведут на `/admin/security`,
+   * но не должны гореть на `/admin/security/events`.
+   */
+  exact?: boolean
+}
 
 type NavLink = BaseNavItem & NavTarget & { items?: never }
 

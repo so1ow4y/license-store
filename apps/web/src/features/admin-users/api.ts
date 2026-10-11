@@ -1,6 +1,7 @@
 import { queryOptions, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api/client'
 import { queryClient } from '@/lib/api/query-client'
+import { SESSION_QUERY_KEY } from '@/lib/auth/session'
 import type { BulkResult } from '@/features/admin/bulk'
 
 /** Пользователи и роли в панели (`admin.controller.ts`). */
@@ -36,9 +37,20 @@ export type AdminUserDetail = AdminUser & {
   lastLoginIp: string | null
   hasPassword: boolean
   oauth: { provider: string; providerUsername: string | null; createdAt: string }[]
+  /** Карточка реселлера, если аккаунт продаёт оптом. */
+  reseller: { id: string; displayName: string; status: 'ACTIVE' | 'SUSPENDED' | 'CLOSED' } | null
 }
 
-export type AdminRole = RoleRef & { id: string; description: string | null; permissions: string[]; users: number }
+export type AdminRole = RoleRef & {
+  id: string
+  description: string | null
+  /** Системные роли принадлежат сиду и в панели только читаются. */
+  isSystem: boolean
+  permissions: string[]
+  users: number
+}
+
+export type PermissionInfo = { slug: string; group: string; description: string | null }
 
 export type UserFilters = {
   q?: string
@@ -82,6 +94,46 @@ export const adminRolesQueryOptions = () =>
     queryFn: () => apiFetch<AdminRole[]>('/admin/roles'),
     staleTime: 5 * 60_000,
   })
+
+export const permissionsQueryOptions = () =>
+  queryOptions({
+    queryKey: ['admin', 'permissions'],
+    queryFn: () => apiFetch<PermissionInfo[]>('/admin/permissions'),
+    staleTime: 10 * 60_000,
+  })
+
+export type RoleInput = {
+  slug?: string
+  name?: string
+  description?: string | null
+  priority?: number
+  permissions?: string[]
+}
+
+function invalidateRoles(): void {
+  void queryClient.invalidateQueries({ queryKey: ['admin', 'roles'] })
+  void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
+  // Изменённая роль может быть и у самого администратора — меню перечитает права.
+  void queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY })
+}
+
+/** Создать (без id) или изменить свою роль. */
+export function useSaveRole(id?: string) {
+  return useMutation({
+    mutationFn: (body: RoleInput) =>
+      id
+        ? apiFetch<AdminRole>(`/admin/roles/${enc(id)}`, { method: 'PATCH', body })
+        : apiFetch<AdminRole>('/admin/roles', { method: 'POST', body }),
+    onSuccess: invalidateRoles,
+  })
+}
+
+export function useDeleteRole() {
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<{ users: number }>(`/admin/roles/${enc(id)}`, { method: 'DELETE' }),
+    onSuccess: invalidateRoles,
+  })
+}
 
 function store(user: AdminUserDetail): void {
   queryClient.setQueryData(adminUserQueryOptions(user.id).queryKey, user)

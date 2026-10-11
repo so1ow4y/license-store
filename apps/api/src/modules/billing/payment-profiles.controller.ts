@@ -22,6 +22,7 @@ import {
   BulkProfilesDto,
   CreateProfileDto,
   ListProfilesDto,
+  MoveProfileDto,
   SearchProfilesDto,
   UpdateProductOptionDto,
   UpdateProfileDto,
@@ -36,10 +37,10 @@ export class PaymentProfilesController {
   constructor(private readonly profiles: PaymentProfilesService) {}
 
   @Get()
-  @RequirePermissions('payment_profiles.manage', 'products.payments.assign')
+  @RequirePermissions('payment_profiles.manage', 'products.payments.assign', 'resellers.manage')
   @ApiOperation({ summary: 'Шаблоны реквизитов и личные реквизиты товара (ключи не отдаются)' })
   async list(@Query() query: ListProfilesDto): Promise<unknown> {
-    return this.profiles.list(query.productId);
+    return this.profiles.list(query.productId, query.scope);
   }
 
   @Get('search')
@@ -73,6 +74,26 @@ export class PaymentProfilesController {
     @Body() dto: UpdateProfileDto,
   ): Promise<unknown> {
     return this.profiles.update(id, dto, user.id);
+  }
+
+  @Post(':id/resellers/all')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('resellers.manage')
+  @ApiOperation({ summary: 'Выдать реквизиты раздела реселлеров всем реселлерам (кроме закрытых)' })
+  async attachToAllResellers(@CurrentUser() user: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string): Promise<unknown> {
+    return this.profiles.attachToAllResellers(id, user.id);
+  }
+
+  @Post(':id/move')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions('payment_profiles.manage')
+  @ApiOperation({ summary: 'Перенести реквизиты между разделами товаров и реселлеров (привязки прежнего раздела снимаются)' })
+  async move(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: MoveProfileDto,
+  ): Promise<unknown> {
+    return this.profiles.move(id, dto.scope, user.id);
   }
 
   @Delete(':id')

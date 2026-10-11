@@ -101,7 +101,7 @@ function RegisterWithKeyPage() {
       acceptSession(result)
       // Кабинет — обычный маршрут, но уходим заменой: форма регистрации
       // в истории уже бесполезна, а ключ в ней погашен.
-      router.history.replace('/')
+      router.history.replace('/licenses')
     },
   })
 

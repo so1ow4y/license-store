@@ -60,6 +60,12 @@ function buildTree(t: TFunction): Group[] {
           keywords: 'роль права доступ role permissions access',
           permission: PERMISSIONS.ROLES_READ,
         },
+        {
+          title: t('settings.nav.roles'),
+          url: '/settings/roles',
+          keywords: 'роли права создать роль набор действий roles permissions custom role',
+          permission: PERMISSIONS.ROLES_READ,
+        },
       ],
     },
   ]

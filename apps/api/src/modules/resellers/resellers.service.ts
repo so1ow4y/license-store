@@ -625,6 +625,57 @@ export class ResellersService {
     };
   }
 
+  /**
+   * Кандидаты в реселлеры для подсказки в форме: аккаунты по логину или почте,
+   * по алфавиту. Уже реселлеры возвращаются с отметкой — их видно, но выбрать
+   * нельзя. Свой аккаунт тоже в списке: администратор может продавать сам.
+   */
+  async candidates(search: string | undefined, page: { skip?: number; take?: number }) {
+    const needle = search?.trim();
+    const where: Prisma.UserWhereInput = {
+      deletedAt: null,
+      status: { not: 'DELETED' },
+      ...(needle
+        ? {
+            OR: [
+              { username: { contains: needle, mode: 'insensitive' } },
+              { email: { contains: needle, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+    const take = Math.min(page.take ?? 30, 100);
+    const skip = page.skip ?? 0;
+    const [rows, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { username: 'asc' },
+        skip,
+        take,
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          status: true,
+          resellerProfile: { select: { id: true } },
+          roles: { select: { role: { select: { name: true, priority: true } } } },
+        },
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+    return {
+      items: rows.map(({ resellerProfile, roles, ...user }) => ({
+        ...user,
+        isReseller: resellerProfile !== null,
+        /** Старшая роль — чтобы отличить сотрудника от покупателя. */
+        role: roles.map((r) => r.role).sort((a, b) => b.priority - a.priority)[0]?.name ?? null,
+      })),
+      total,
+      skip,
+      take,
+    };
+  }
+
   async create(actor: AuthenticatedUser, dto: CreateResellerDto) {
     const user = await this.prisma.user.findFirst({
       where: { username: { equals: dto.username.trim(), mode: 'insensitive' }, deletedAt: null },

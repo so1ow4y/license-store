@@ -59,7 +59,7 @@ function LicenseDetailPage() {
   return (
     <div className='mx-auto w-full max-w-4xl space-y-6'>
       <Link
-        to='/'
+        to='/licenses'
         className='inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground'
       >
         <ArrowLeft className='size-4' />
@@ -310,7 +310,7 @@ function LicenseLoadError({
         <AlertDescription className='space-y-3'>
           <p>{t('licenses.detail.error.missing.description')}</p>
           <Button asChild variant='outline' size='sm'>
-            <Link to='/'>{t('licenses.detail.error.missing.action')}</Link>
+            <Link to='/licenses'>{t('licenses.detail.error.missing.action')}</Link>
           </Button>
         </AlertDescription>
       </Alert>

@@ -1,10 +1,11 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 
 import { RequirePermissions } from '@common/rbac/permissions.decorator';
 import { CurrentUser } from '@modules/auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '@modules/auth/guards/jwt-auth.guard';
+import { PaymentProfilesService } from '@modules/billing/payment-profiles.service';
 
 import {
   ChangeBalanceDto,
@@ -13,14 +14,17 @@ import {
   CreateTopupDto,
   ExtendClientLicenseDto,
   IssueKeysDto,
+  ListCandidatesDto,
   ListClientLicensesDto,
   ListKeysDto,
   ListPageDto,
   ListResellersDto,
   ListTopupsDto,
   RejectTopupDto,
+  ResellerPaymentOptionDto,
   SubmitTopupTxDto,
   UpdateResellerDto,
+  UpdateResellerPaymentOptionDto,
 } from './dto/resellers.dto';
 import { ResellerTopupsService } from './reseller-topups.service';
 import { ResellersService } from './resellers.service';
@@ -193,13 +197,64 @@ export class AdminResellerTopupsController {
 @ApiBearerAuth('jwt')
 @Controller('admin/resellers')
 export class AdminResellersController {
-  constructor(private readonly resellers: ResellersService) {}
+  constructor(
+    private readonly resellers: ResellersService,
+    private readonly profiles: PaymentProfilesService,
+  ) {}
 
   @Get()
   @RequirePermissions('resellers.read', 'resellers.manage')
   @ApiOperation({ summary: 'Реселлеры с балансом и продажами за 30 дней' })
   async list(@Query() query: ListResellersDto): Promise<unknown> {
     return this.resellers.list(query);
+  }
+
+  @Get('candidates')
+  @RequirePermissions('resellers.manage')
+  @ApiOperation({ summary: 'Аккаунты для подсказки «кого сделать реселлером» (включая свой)' })
+  async candidates(@Query() query: ListCandidatesDto): Promise<unknown> {
+    return this.resellers.candidates(query.search, query);
+  }
+
+  @Get(':id/payment-options')
+  @RequirePermissions('resellers.read', 'resellers.manage')
+  @ApiOperation({ summary: 'Реквизиты, которыми реселлер пополняет баланс' })
+  async paymentOptions(@Param('id', ParseUUIDPipe) id: string): Promise<unknown> {
+    return this.profiles.resellerOptions(id);
+  }
+
+  @Post(':id/payment-options')
+  @RequirePermissions('resellers.manage')
+  @ApiOperation({ summary: 'Привязать реквизиты из раздела реселлеров' })
+  async attachPaymentOption(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResellerPaymentOptionDto,
+  ): Promise<unknown> {
+    return this.profiles.attachToReseller(id, dto.profileId, user.id);
+  }
+
+  @Patch(':id/payment-options/:profileId')
+  @RequirePermissions('resellers.manage')
+  @ApiOperation({ summary: 'Включить или выключить реквизиты реселлера, порядок' })
+  async updatePaymentOption(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @Body() dto: UpdateResellerPaymentOptionDto,
+  ): Promise<unknown> {
+    return this.profiles.updateResellerOption(id, profileId, dto, user.id);
+  }
+
+  @Delete(':id/payment-options/:profileId')
+  @RequirePermissions('resellers.manage')
+  @ApiOperation({ summary: 'Отвязать реквизиты от реселлера' })
+  async detachPaymentOption(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+  ): Promise<unknown> {
+    return this.profiles.detachFromReseller(id, profileId, user.id);
   }
 
   @Post()

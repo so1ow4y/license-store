@@ -194,6 +194,11 @@ services:
       # потеря keepalive к бэкенду. Поэтому имя своё: host-gateway даёт ровно
       # одну запись, IPv4, и пул апстрима получается из одного живого peer'а.
       API_UPSTREAM: ${API_UPSTREAM:-lp-host:3000}
+      # Токен агента синхронизации списков (блокировки на краю и доверенные
+      # адреса). Тот же, что у API. Пусто — синхронизация выключена, nginx
+      # работает как раньше. См. entrypoint.d/30-lp-edge-sync.sh.
+      EDGE_AGENT_TOKEN: ${EDGE_AGENT_TOKEN:-}
+      EDGE_SYNC_INTERVAL: ${EDGE_SYNC_INTERVAL:-10}
     volumes:
       - ./docker/nginx/templates:/etc/nginx/templates:ro
       # Общая часть server-блоков: включается и из HTTP, и из HTTPS.
@@ -216,6 +221,9 @@ services:
       - ./docker/nginx/entrypoint.d/16-resolve-upstream.envsh:/docker-entrypoint.d/16-resolve-upstream.envsh:ro
       # Выключает HTTPS, если сертификата нет: иначе nginx не стартует вовсе.
       - ./docker/nginx/entrypoint.d/25-tls-optional.envsh:/docker-entrypoint.d/25-tls-optional.envsh:ro
+      # Фоновый агент: забирает у API списки блокировок и доверенных адресов
+      # и перезагружает nginx, когда они меняются.
+      - ./docker/nginx/entrypoint.d/30-lp-edge-sync.sh:/docker-entrypoint.d/30-lp-edge-sync.sh:ro
     extra_hosts:
       - "lp-host:host-gateway"
     healthcheck:
@@ -225,6 +233,30 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+
+  # Агент фаервола: блоки уровня «фаервол» из центра безопасности становятся
+  # правилами nftables на ХОСТЕ — пакеты с заблокированных адресов
+  # отбрасываются до TCP-рукопожатия и не доходят ни до nginx, ни до API.
+  # Включается явно, потому что меняет сетевые правила машины:
+  #   docker compose --profile firewall up -d firewall
+  # Нужен Linux-хост (или WSL2) с nftables в ядре и EDGE_AGENT_TOKEN.
+  # Свои правила агент держит в отдельной таблице inet lp_guard и удаляет
+  # её при остановке: выключенный агент = никаких блоков на хосте.
+  firewall:
+    profiles: ["firewall"]
+    build:
+      context: ./docker/firewall
+    container_name: lp-firewall
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      EDGE_AGENT_TOKEN: ${EDGE_AGENT_TOKEN:-}
+      # Сеть хоста: API доступен по loopback. В профиле full — через nginx
+      # или опубликованный порт API.
+      EDGE_API_URL: ${EDGE_API_URL:-http://127.0.0.1:3000}
+      EDGE_SYNC_INTERVAL: ${EDGE_SYNC_INTERVAL:-10}
 
   # Ловит всю исходящую почту локально. Веб-интерфейс: http://localhost:8025
   # Нужен, чтобы проверять письма верификации/антифрода, ничего не отправляя наружу.

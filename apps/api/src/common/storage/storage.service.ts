@@ -44,6 +44,8 @@ import { ENV, type Env } from '../config/env.schema';
 
 /** TTL ссылки на загрузку. Хватает на передачу, но не на раздачу другим. */
 const UPLOAD_URL_TTL_SEC = 900;
+/** TTL ссылки на скачивание: начать загрузку хватает, пересылать — бессмысленно. */
+const DOWNLOAD_URL_TTL_SEC = 300;
 
 /**
  * Потолок для серверного хеширования.
@@ -217,6 +219,30 @@ export class StorageService implements OnModuleInit {
       url,
       expiresInSec: UPLOAD_URL_TTL_SEC,
     };
+  }
+
+  /**
+   * Короткоживущая ссылка на скачивание объекта под заданным именем.
+   *
+   * Только для бакета релизов: payload §7 по ссылкам не отдаётся никогда.
+   * Пять минут хватает, чтобы браузер начал загрузку, но мало, чтобы ссылку
+   * стоило пересылать: доступ решает API, а не знание адреса.
+   */
+  async createDownloadUrl(params: { bucket: string; objectKey: string; filename: string }): Promise<{ url: string; expiresInSec: number }> {
+    if (params.bucket === this.bucketPayloads) {
+      throw new Error('payload не раздаётся по ссылкам');
+    }
+    const ascii = params.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+    const url = await getSignedUrl(
+      this.signer,
+      new GetObjectCommand({
+        Bucket: params.bucket,
+        Key: params.objectKey,
+        ResponseContentDisposition: `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(params.filename)}`,
+      }),
+      { expiresIn: DOWNLOAD_URL_TTL_SEC },
+    );
+    return { url, expiresInSec: DOWNLOAD_URL_TTL_SEC };
   }
 
   async head(
@@ -487,6 +513,15 @@ export class StorageService implements OnModuleInit {
    * в confirm-upload это не поймает — она считает ожидаемый префикс из той
    * же версии и совпадёт сама с собой.
    */
+  /** Ключ объекта для релиза загрузчика: платформа, канал и версия — в пути. */
+  buildLauncherKey(platform: string, channel: string, version: string, filename: string): string {
+    const plat = this.safeSegment(platform.toLowerCase(), 'platform');
+    const chan = this.safeSegment(channel.toLowerCase(), 'channel');
+    const ver = this.safeSegment(version, 'version');
+    const safe = this.safeSegment(filename, 'filename', 128);
+    return `launcher/${plat}/${chan}/${ver}/${safe}`;
+  }
+
   buildPayloadKey(productSlug: string, version: string, filename: string): string {
     const slug = this.safeSegment(productSlug, 'productSlug');
     const ver = this.safeSegment(version, 'version');

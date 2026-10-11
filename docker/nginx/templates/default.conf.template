@@ -60,19 +60,51 @@ map $request_uri $lp_force_https {
     "~^/\.well-known/acme-challenge/"  "";
 }
 
-limit_req_zone $binary_remote_addr zone=auth_zone:10m     rate=10r/m;
-limit_req_zone $binary_remote_addr zone=api_zone:10m      rate=300r/m;
-limit_req_zone $binary_remote_addr zone=launcher_zone:10m rate=120r/m;
+# ------------------------------------------------------------------
+#  Списки центра безопасности (apps/api/.../security-center/edge.service.ts).
+#
+#  Файлы пишет агент синхронизации (entrypoint.d/30-lp-edge-sync.sh): он
+#  забирает их у API по EDGE_AGENT_TOKEN и перезагружает nginx, только
+#  когда содержимое изменилось. Пока API не ответил или токена нет, файлы
+#  пустые и nginx работает как раньше. Ключ — адрес сокета ($remote_addr),
+#  тот же, что у limit_req: почему не X-Forwarded-For, см. lp-locations.conf.
+#
+#  $lp_edge_blocked — блоки уровней «nginx» и «фаервол»: 403 до прокси в API.
+#  $lp_trusted      — доверенные адреса из «приоритета трафика»: мимо
+#                     limit_req и limit_conn. Во время флуда администратор
+#                     не должен упираться в лимиты, рассчитанные на чужие
+#                     скрипты, — иначе DDoS отрезает именно его.
+# ------------------------------------------------------------------
+geo $lp_edge_blocked {
+    default 0;
+    include /etc/nginx/lp-edge/blocklist.conf;
+}
+
+geo $lp_trusted {
+    default 0;
+    include /etc/nginx/lp-edge/priority.conf;
+}
+
+# Пустой ключ limit_req/limit_conn не учитывается вовсе: так доверенные
+# выходят из-под лимитов без отдельных location и копий директив.
+map $lp_trusted $lp_limit_key {
+    default $binary_remote_addr;
+    1       "";
+}
+
+limit_req_zone $lp_limit_key zone=auth_zone:10m     rate=10r/m;
+limit_req_zone $lp_limit_key zone=api_zone:10m      rate=300r/m;
+limit_req_zone $lp_limit_key zone=launcher_zone:10m rate=120r/m;
 
 # Отдельная зона под payload. Своя, а не общая с launcher_zone, потому что
 # ответ здесь на три порядка тяжелее проверки лицензии и делить с ней один
 # бюджет нельзя: поток проверок съедал бы право на запуск.
 # Ставка та же, что у launcher_zone, — см. рассуждение в самом location.
-limit_req_zone $binary_remote_addr zone=payload_zone:10m  rate=120r/m;
+limit_req_zone $lp_limit_key zone=payload_zone:10m  rate=120r/m;
 
 limit_req_status 429;
 
-limit_conn_zone $binary_remote_addr zone=conn_zone:10m;
+limit_conn_zone $lp_limit_key zone=conn_zone:10m;
 
 # ------------------------------------------------------------------
 #  Апстрим.

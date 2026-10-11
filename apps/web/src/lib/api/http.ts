@@ -9,6 +9,7 @@
  */
 
 import { acceptLanguageHeader } from '@/lib/i18n'
+import { getPriorityPass } from './priority-pass'
 
 /** Базовый URL из окружения. В деве — localhost:3000, в бою — относительный /api/v1. */
 export const API_BASE_URL: string = import.meta.env.VITE_API_URL ?? '/api/v1'
@@ -102,6 +103,9 @@ export async function httpRequest<T>(
     'Accept-Language': acceptLanguageHeader(),
     ...headers,
   }
+  // Место в очереди при перегрузке — см. priority-pass.ts.
+  const pass = getPriorityPass()
+  if (pass) requestHeaders['X-Priority-Pass'] = pass
   if (body !== undefined) requestHeaders['Content-Type'] = 'application/json'
   if (token) requestHeaders.Authorization = `Bearer ${token}`
 

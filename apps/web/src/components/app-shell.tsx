@@ -1,19 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
 import {
+  Ban,
   CreditCard,
+  Download,
+  Gauge,
+  HardDriveDownload,
+  LayoutDashboard,
+  LogIn,
+  Siren,
+  Workflow,
   Handshake,
   KeyRound,
   LayoutGrid,
   Package,
+  Palette,
   Receipt,
   ScrollText,
+  Send,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   ShoppingCart,
   SlidersHorizontal,
   Store,
   Ticket,
+  UserCog,
+  UserRound,
   Users,
   Wallet,
 } from 'lucide-react'
@@ -23,6 +36,7 @@ import { PERMISSIONS } from '@/lib/auth/permissions'
 import { hardLogout, useSession } from '@/lib/auth/session'
 import { useT, type TFunction } from '@/lib/i18n'
 import { setUiPreferences, useUiPreferences, type DockPosition } from '@/lib/ui/preferences'
+import { cn } from '@/lib/utils'
 import { Dock } from '@/components/layout/dock'
 import { type NavGroup as NavGroupType, type NavTarget } from '@/components/layout/types'
 import { PasswordRequiredBanner } from '@/components/password-required-banner'
@@ -42,12 +56,12 @@ type GatedNavItem =
 type GatedNavGroup = { title: string; items: GatedNavItem[] }
 
 /**
- * Меню ветками: «Кабинет», «Мои продажи» (реселлеру) и ветки админки.
- * Ветка раскрывается на месте в развёрнутом доке и выпадающим списком в
- * свёрнутом — так в доке видно 5–8 значков вместо пятнадцати.
+ * Меню ветками: «Кабинет», «Мои продажи» (реселлеру), ветки админки и
+ * «Настройки». Ветка раскрывается на месте в развёрнутом доке и подветкой
+ * квадратиков в свёрнутом — так в доке видно 5–8 значков вместо пятнадцати.
  */
 function buildMenu(t: TFunction): GatedNavGroup[] {
-  const ADMIN_SECURITY = [PERMISSIONS.AUDIT_READ, PERMISSIONS.LOGINS_READ, PERMISSIONS.SECURITY_IP_BLOCK]
+  const LOG_READERS = [PERMISSIONS.AUDIT_READ, PERMISSIONS.LOGINS_READ]
   return [
     {
       title: t('nav.group.workspace'),
@@ -56,10 +70,11 @@ function buildMenu(t: TFunction): GatedNavGroup[] {
           title: t('nav.branch.cabinet'),
           icon: LayoutGrid,
           items: [
-            { title: t('nav.licenses'), url: '/', icon: LayoutGrid },
+            { title: t('nav.licenses'), url: '/licenses', icon: LayoutGrid },
             { title: t('nav.catalog'), url: '/catalog', icon: ShoppingCart },
             { title: t('nav.orders'), url: '/orders', icon: Receipt },
             { title: t('nav.activate'), url: '/activate', icon: Ticket },
+            { title: t('nav.downloads'), url: '/downloads', icon: Download },
           ],
         },
         {
@@ -120,6 +135,7 @@ function buildMenu(t: TFunction): GatedNavGroup[] {
               icon: CreditCard,
               permission: [PERMISSIONS.PAYMENTS_MANAGE, PERMISSIONS.PAYMENT_PROFILES_MANAGE, PERMISSIONS.PRODUCTS_PAYMENTS_ASSIGN],
             },
+            { title: t('nav.admin.launcher'), url: '/admin/launcher', icon: HardDriveDownload, permission: PERMISSIONS.LAUNCHER_MANAGE },
           ],
         },
         {
@@ -132,10 +148,23 @@ function buildMenu(t: TFunction): GatedNavGroup[] {
           ],
         },
         {
-          title: t('nav.branch.system'),
+          // Центр безопасности: каждый раздел — свой квадратик, как в SIEM.
+          title: t('nav.branch.security'),
           icon: ShieldAlert,
           items: [
-            { title: t('nav.admin.security'), url: '/admin/security', icon: ShieldAlert, permission: ADMIN_SECURITY },
+            { title: t('nav.sec.dashboards'), url: '/admin/security', exact: true, icon: LayoutDashboard, permission: LOG_READERS },
+            { title: t('nav.sec.events'), url: '/admin/security/events', icon: ScrollText, permission: PERMISSIONS.AUDIT_READ },
+            { title: t('nav.sec.logins'), url: '/admin/security/logins', icon: LogIn, permission: PERMISSIONS.LOGINS_READ },
+            { title: t('nav.sec.hits'), url: '/admin/security/hits', icon: Siren, permission: [...LOG_READERS, PERMISSIONS.SECURITY_RULES_MANAGE] },
+            { title: t('nav.sec.rules'), url: '/admin/security/rules', icon: Workflow, permission: [...LOG_READERS, PERMISSIONS.SECURITY_RULES_MANAGE] },
+            { title: t('nav.sec.blocks'), url: '/admin/security/blocks', icon: Ban, permission: [PERMISSIONS.SECURITY_IP_BLOCK, PERMISSIONS.USERS_BLOCK] },
+            { title: t('nav.sec.traffic'), url: '/admin/security/traffic', icon: Gauge, permission: [PERMISSIONS.SECURITY_TRAFFIC_MANAGE, PERMISSIONS.SECURITY_IP_BLOCK] },
+          ],
+        },
+        {
+          title: t('nav.branch.system'),
+          icon: SlidersHorizontal,
+          items: [
             { title: t('nav.admin.settings'), url: '/admin/settings', icon: SlidersHorizontal, permission: PERMISSIONS.SETTINGS_READ },
           ],
         },
@@ -143,8 +172,27 @@ function buildMenu(t: TFunction): GatedNavGroup[] {
     },
     {
       title: t('nav.group.account'),
-      // Профиль, безопасность, внешний вид, Telegram и роль — в одном окне настроек.
-      items: [{ title: t('nav.settings'), url: '/settings', icon: Settings }],
+      // Профиль, безопасность, внешний вид, Telegram, доступ и роли — разделы
+      // одного окна настроек; в доке они подветкой, как остальные ветки.
+      items: [
+        {
+          title: t('nav.settings'),
+          icon: Settings,
+          items: [
+            { title: t('settings.group.profile'), url: '/settings/profile', icon: UserRound },
+            { title: t('settings.group.security'), url: '/settings/security/password', match: '/settings/security', icon: ShieldCheck },
+            { title: t('settings.group.interface'), url: '/settings/appearance', icon: Palette },
+            { title: t('settings.group.integrations'), url: '/settings/telegram', icon: Send },
+            { title: t('settings.nav.access'), url: '/settings/access', icon: KeyRound, permission: PERMISSIONS.ROLES_READ },
+            {
+              title: t('settings.nav.roles'),
+              url: '/settings/roles',
+              icon: UserCog,
+              permission: [PERMISSIONS.ROLES_READ, PERMISSIONS.ROLES_MANAGE],
+            },
+          ],
+        },
+      ],
     },
   ]
 }
@@ -187,8 +235,10 @@ const COLLAPSED_SIZE = 66
  * Каркас защищённой части: док навигации, глобальный баннер и содержимое
  * маршрута в `<Outlet />`.
  *
- * На телефоне развёрнутый док — временная шторка поверх страницы: место под
- * неё не резервируется, и выбор не запоминается.
+ * Сдвигать ли страницу под док, решает настройка `dockPush`: по умолчанию
+ * док лежит поверх, можно отдать место под сам док или ещё и под открытую
+ * колонку подпунктов. На телефоне развёрнутый док — временная шторка поверх
+ * страницы: место под неё не резервируется, и выбор не запоминается.
  */
 export function AppShell() {
   const { me, can, requiresPassword } = useSession()
@@ -196,20 +246,25 @@ export function AppShell() {
   const prefs = useUiPreferences()
   const isMobile = useIsMobile()
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [reserved, setReserved] = useState(COLLAPSED_SIZE)
+  const [reserved, setReserved] = useState({ dock: COLLAPSED_SIZE, strip: 0 })
   const groups = visibleMenu(buildMenu(t), can)
 
   const expanded = isMobile ? mobileOpen : prefs.dockExpanded
   const overlayOpen = isMobile && mobileOpen && !prefs.dockHidden
   // Спрятанный или выезжающий док места на странице не занимает.
   const autoHide = prefs.dockAutoHide && !isMobile
-  const reserve = prefs.dockHidden || autoHide ? 0 : reserved
+  const reserve =
+    prefs.dockHidden || autoHide || prefs.dockPush === 'none'
+      ? 0
+      : reserved.dock + (prefs.dockPush === 'all' ? reserved.strip : 0)
 
   // Пока шторка открыта, страница держит место только под свёрнутый док.
   const overlayRef = useRef(overlayOpen)
   overlayRef.current = overlayOpen
-  const onSize = useCallback((size: number) => {
-    if (!overlayRef.current) setReserved(size)
+  const onSize = useCallback((dock: number, strip: number) => {
+    if (!overlayRef.current) {
+      setReserved((prev) => (prev.dock === dock && prev.strip === strip ? prev : { dock, strip }))
+    }
   }, [])
 
   useEffect(() => {
@@ -226,9 +281,10 @@ export function AppShell() {
     else setUiPreferences({ dockExpanded: !prefs.dockExpanded })
   }
 
-  function onNavigate() {
+  // Стабильная ссылка: док держит на ней обработчик клавиатуры.
+  const onNavigate = useCallback(() => {
     if (isMobile) setMobileOpen(false)
-  }
+  }, [isMobile])
 
   async function onLogout() {
     try {
@@ -247,6 +303,11 @@ export function AppShell() {
         expanded={expanded}
         hidden={prefs.dockHidden}
         autoHide={autoHide}
+        subMode={prefs.dockSubMode}
+        grow={prefs.dockGrow}
+        sizeMode={prefs.dockSizeMode}
+        size={prefs.dockSize}
+        thickness={prefs.dockWidthMode === 'fixed' ? prefs.dockWidth : null}
         theme={prefs.theme}
         groups={groups}
         username={me?.username ?? ''}
@@ -270,8 +331,14 @@ export function AppShell() {
 
       {/* min-w-0: иначе широкая таблица растягивает страницу и прокрутка
           внутри таблиц не включается. */}
+      {/* Открытая справа панель записи (components/side-panel) отодвигает
+          страницу на свою ширину — список остаётся виден рядом с ней.
+          В настройках можно выбрать «поверх», без сдвига. */}
       <div
-        className='min-w-0 transition-[padding] duration-200'
+        className={cn(
+          'min-w-0 transition-[padding] duration-200',
+          prefs.sidePanelPush && 'xl:pr-[var(--side-panel-width,0px)]'
+        )}
         style={{ [PADDING[prefs.dock]]: reserve }}
       >
         {requiresPassword && <PasswordRequiredBanner />}

@@ -26,7 +26,7 @@ import { LicenseCard } from '@/features/licenses/license-card'
 import { licenseStatusLabel } from '@/features/licenses/status-badge'
 
 /**
- * Мои лицензии (план п. 3.9).
+ * Мои лицензии (план п. 3.9). Живут на /licenses: корень сайта — лендинг\n * платформы (routes/index.tsx), кабинет начинается отсюда.
  *
  * `GET /licenses` — единственный маршрут списка: область видимости выбирает
  * сервер по правам, отдельного «моего» списка не существует. Пользователь с
@@ -43,7 +43,7 @@ const listSearchSchema = z.object({
   q: z.string().trim().min(1).max(128).optional().catch(undefined),
 })
 
-export const Route = createFileRoute('/_app/')({
+export const Route = createFileRoute('/_app/licenses/')({
   validateSearch: listSearchSchema,
   component: LicensesPage,
 })

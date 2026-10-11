@@ -4,6 +4,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
@@ -219,6 +220,40 @@ export class ListTopupsDto extends PageDto {
   @IsOptional()
   @IsIn(['OPEN', ...Object.values(ResellerTopupStatus)])
   status?: 'OPEN' | ResellerTopupStatus;
+
+  @ApiPropertyOptional({ description: 'Только заявки этого реселлера' })
+  @IsOptional()
+  @IsUUID()
+  resellerId?: string;
+}
+
+export class ListCandidatesDto extends PageDto {
+  @ApiPropertyOptional({ description: 'Начало логина или почты; пусто — все по алфавиту' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  search?: string;
+}
+
+export class ResellerPaymentOptionDto {
+  @ApiProperty({ description: 'Реквизиты из раздела реселлеров' })
+  @IsUUID()
+  profileId!: string;
+}
+
+export class UpdateResellerPaymentOptionDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  enabled?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1000)
+  sortOrder?: number;
 }
 
 export class ConfirmTopupDto {

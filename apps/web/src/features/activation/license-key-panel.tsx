@@ -53,7 +53,7 @@ export function WhatHappensNext({ emailed = true }: { emailed?: boolean }) {
           снаружи ссылки: подчёркнутая точка выглядит как часть адреса. */}
       <li>
         {t('activation.next.inLicenses')}{' '}
-        <Link to='/' className='underline underline-offset-4'>
+        <Link to='/licenses' className='underline underline-offset-4'>
           {t('activation.next.inLicenses.link')}
         </Link>
         .

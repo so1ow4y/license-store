@@ -157,6 +157,13 @@ enum PaymentStatus {
   REFUNDED
 }
 
+/// Для кого реквизиты: оплата товаров покупателями или пополнение баланса
+/// реселлерами. Разделы в панели раздельные, реквизиты переносятся между ними.
+enum PaymentScope {
+  PRODUCTS
+  RESELLERS
+}
+
 enum FileStorage {
   S3
   LOCAL
@@ -1083,14 +1090,34 @@ model Reseller {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  clients          User[]                @relation("ResellerClients")
+  clients          User[]                  @relation("ResellerClients")
   licenses         License[]
   registrationKeys RegistrationKey[]
   transactions     ResellerTransaction[]
   topups           ResellerTopup[]
+  paymentOptions   ResellerPaymentOption[]
 
   @@index([status])
   @@map("resellers")
+}
+
+/// Реквизиты, которыми конкретный реселлер пополняет баланс. Нет ни одной
+/// строки — реселлеру доступны все реквизиты раздела «для реселлеров».
+model ResellerPaymentOption {
+  resellerId String         @map("reseller_id") @db.Uuid
+  reseller   Reseller       @relation(fields: [resellerId], references: [id], onDelete: Cascade)
+  profileId  String         @map("profile_id") @db.Uuid
+  profile    PaymentProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  enabled    Boolean        @default(true)
+  sortOrder  Int            @default(0) @map("sort_order")
+
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@id([resellerId, profileId])
+  @@index([profileId])
+  @@map("reseller_payment_options")
 }
 
 /// Заявка реселлера на пополнение баланса криптой. Как заказ покупателя:
@@ -1289,6 +1316,8 @@ model PaymentProfile {
   id        String          @id @db.Uuid
   provider  PaymentProvider
   name      String          @db.VarChar(128)
+  /// Раздел: реквизиты товаров не видны реселлерам, и наоборот.
+  scope     PaymentScope    @default(PRODUCTS)
   productId String?         @map("product_id") @db.Uuid
   product   Product?        @relation(fields: [productId], references: [id], onDelete: Cascade)
   config    Json            @default("{}") @db.JsonB
@@ -1302,11 +1331,13 @@ model PaymentProfile {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   archivedAt  DateTime? @map("archived_at") @db.Timestamptz(3)
 
-  productOptions ProductPaymentOption[]
-  payments       Payment[]
+  productOptions  ProductPaymentOption[]
+  resellerOptions ResellerPaymentOption[]
+  payments        Payment[]
 
   @@index([productId])
   @@index([provider, archivedAt])
+  @@index([scope, archivedAt])
   @@map("payment_profiles")
 }
 
@@ -1411,6 +1442,7 @@ model File {
   payloadBuilds   PayloadBuild[]     @relation("PayloadFile")
   productIcons    Product[]          @relation("ProductIcon")
   launcherLogs    LauncherLogBatch[] @relation("LauncherLogFile")
+  launcherReleases LauncherRelease[] @relation("LauncherReleaseFile")
 
   @@unique([bucket, objectKey])
   @@index([sha256])
@@ -1743,19 +1775,227 @@ model UserIp {
   @@map("user_ips")
 }
 
+/// Где действует блокировка адреса — уровень модели OSI. Каждый следующий
+/// уровень раньше отсекает трафик и включает в себя предыдущие: блок на
+/// фаерволе продолжает действовать и на краю, и в приложении, если агент
+/// фаервола не запущен.
+enum IpBlockLevel {
+  /// L7 в приложении: запрос доходит до API и отклоняется первым guard'ом.
+  APP
+  /// L7 на краю: nginx отвечает 403, в API запрос не попадает.
+  EDGE
+  /// L3/L4 на хосте: nftables отбрасывает пакеты до TCP-рукопожатия.
+  FIREWALL
+}
+
 /// Блокировка адреса или подсети: запросы с них отклоняются до аутентификации.
 model IpBlock {
-  id          String    @id @db.Uuid
+  id          String       @id @db.Uuid
   /// Нормализованная запись CIDR: 203.0.113.7/32, 2001:db8::/48.
-  cidr        String    @unique @db.VarChar(64)
-  reason      String?   @db.VarChar(500)
-  createdById String?   @map("created_by_id") @db.Uuid
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  cidr        String       @unique @db.VarChar(64)
+  reason      String?      @db.VarChar(500)
+  level       IpBlockLevel @default(APP)
+  /// Порты для фаервола; пусто — все порты. Блок с портами, среди которых
+  /// нет веб-портов, приложение и nginx не применяют — это забота фаервола.
+  ports       Int[]        @default([])
+  /// manual — руками, rule — правило корреляции (rule_id).
+  source      String       @default("manual") @db.VarChar(16)
+  ruleId      String?      @map("rule_id") @db.Uuid
+  createdById String?      @map("created_by_id") @db.Uuid
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   /// NULL — бессрочно.
-  expiresAt   DateTime? @map("expires_at") @db.Timestamptz(3)
+  expiresAt   DateTime?    @map("expires_at") @db.Timestamptz(3)
 
   @@index([expiresAt])
+  @@index([level])
   @@map("ip_blocks")
+}
+
+enum TrafficPriorityKind {
+  IP
+  USER
+}
+
+/// Доверенные адреса и пользователи: их запросы обслуживаются первыми и
+/// не попадают под ограничения при перегрузке и атаке.
+model TrafficPriority {
+  id          String              @id @db.Uuid
+  kind        TrafficPriorityKind
+  /// CIDR для IP, id пользователя для USER.
+  value       String              @db.VarChar(64)
+  /// 1–100: чем больше, тем раньше обслуживается запрос.
+  weight      Int
+  note        String?             @db.VarChar(300)
+  createdById String?             @map("created_by_id") @db.Uuid
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([kind, value])
+  @@map("traffic_priorities")
+}
+
+enum CorrelationSource {
+  LOGINS
+  AUDIT
+}
+
+enum CorrelationAction {
+  ALERT
+  BLOCK_IP
+  BLOCK_USER
+}
+
+enum HitSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum HitStatus {
+  NEW
+  ACKNOWLEDGED
+  RESOLVED
+  FALSE_POSITIVE
+}
+
+/// Правило корреляции: «N событий по запросу за окно, сгруппировано по полю»
+/// (или «N разных значений поля»), и что сделать — сработка, блок адреса на
+/// выбранном уровне с портами, блок пользователя.
+model CorrelationRule {
+  id              String            @id @db.Uuid
+  name            String            @db.VarChar(120)
+  description     String?           @db.VarChar(1000)
+  enabled         Boolean           @default(false)
+  source          CorrelationSource
+  /// Строка поиска журнала — тот же язык, что в обозревателе событий.
+  query           String            @default("") @db.VarChar(1000)
+  groupBy         String            @map("group_by") @db.VarChar(32)
+  /// Считать не события, а разные значения этого поля (перебор логинов с адреса).
+  distinctField   String?           @map("distinct_field") @db.VarChar(32)
+  threshold       Int
+  windowMinutes   Int               @map("window_minutes")
+  severity        HitSeverity       @default(MEDIUM)
+  action          CorrelationAction @default(ALERT)
+  blockLevel      IpBlockLevel      @default(EDGE) @map("block_level")
+  blockPorts      Int[]             @default([]) @map("block_ports")
+  /// NULL — бессрочно.
+  blockHours      Int?              @map("block_hours")
+  /// Повторная сработка по тому же ключу не раньше, чем через столько минут.
+  cooldownMinutes Int               @default(60) @map("cooldown_minutes")
+  lastRunAt       DateTime?         @map("last_run_at") @db.Timestamptz(3)
+  lastHitAt       DateTime?         @map("last_hit_at") @db.Timestamptz(3)
+  createdById     String?           @map("created_by_id") @db.Uuid
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  hits CorrelationHit[]
+
+  @@index([enabled])
+  @@map("correlation_rules")
+}
+
+/// Сработка правила: ключ группы (адрес, логин), сколько насчитали, что сделали.
+model CorrelationHit {
+  id            String            @id @db.Uuid
+  ruleId        String            @map("rule_id") @db.Uuid
+  rule          CorrelationRule   @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  groupKey      String            @map("group_key") @db.VarChar(255)
+  count         Int
+  distinctCount Int?              @map("distinct_count")
+  severity      HitSeverity
+  action        CorrelationAction
+  /// alerted | blocked | skipped_protected | skipped_existing | failed:<код>
+  outcome       String            @db.VarChar(64)
+  blockId       String?           @map("block_id") @db.Uuid
+  status        HitStatus         @default(NEW)
+  windowFrom    DateTime          @map("window_from") @db.Timestamptz(3)
+  windowTo      DateTime          @map("window_to") @db.Timestamptz(3)
+  firstEventAt  DateTime?         @map("first_event_at") @db.Timestamptz(3)
+  lastEventAt   DateTime?         @map("last_event_at") @db.Timestamptz(3)
+  /// Что стояло за сработкой: топ значений по полям внутри группы.
+  sample        Json?             @db.JsonB
+  note          String?           @db.VarChar(1000)
+  handledById   String?           @map("handled_by_id") @db.Uuid
+  handledAt     DateTime?         @map("handled_at") @db.Timestamptz(3)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([ruleId, groupKey, createdAt])
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@map("correlation_hits")
+}
+
+/// Кому доступен релиз загрузчика.
+enum LauncherAudience {
+  /// Любой посетитель — кнопка «Скачать» есть и на главной странице.
+  PUBLIC
+  /// Любой вошедший пользователь.
+  USERS
+  /// Пользователи с действующей лицензией.
+  LICENSED
+  /// Только перечисленные роли (бета-тестеры, сотрудники).
+  ROLES
+}
+
+enum LauncherPlatform {
+  WINDOWS
+  LINUX
+  MACOS
+}
+
+/// Релиз самого клиента-загрузчика (не товара): что скачивает пользователь
+/// из кабинета или с главной. Файл заливается в хранилище по presigned-ссылке,
+/// хеш считает сервер; раздаётся короткоживущей подписанной ссылкой.
+model LauncherRelease {
+  id          String           @id @db.Uuid
+  version     String           @db.VarChar(32)
+  /// major*1_000_000 + minor*1_000 + patch — та же формула, что у ProductVersion.
+  versionCode Int              @map("version_code")
+  platform    LauncherPlatform @default(WINDOWS)
+  channel     ReleaseChannel   @default(STABLE)
+  /// Что нового — показывается в кабинете и на главной.
+  notes       String?
+  audience    LauncherAudience @default(USERS)
+  /// Слаги ролей для audience = ROLES.
+  roles       String[]         @default([])
+  /// Старые версии загрузчика должны обновиться до этой.
+  isMandatory Boolean          @default(false) @map("is_mandatory")
+  isPublished Boolean          @default(false) @map("is_published")
+  publishedAt DateTime?        @map("published_at") @db.Timestamptz(3)
+
+  fileId   String? @map("file_id") @db.Uuid
+  file     File?   @relation("LauncherReleaseFile", fields: [fileId], references: [id], onDelete: SetNull)
+  /// Имя, под которым файл сохранится у пользователя.
+  fileName String? @map("file_name") @db.VarChar(255)
+  /// Дублируется из File: эталон хеша релиза неизменяем, даже если файл перезальют.
+  sha256   String? @db.Char(64)
+  fileSize BigInt? @map("file_size")
+
+  downloads   Int      @default(0)
+  createdById String   @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([platform, channel, version])
+  @@index([platform, channel, isPublished, versionCode(sort: Desc)])
+  @@map("launcher_releases")
+}
+
+/// Дашборд безопасности: набор виджетов, который собирает себе пользователь.
+model SecurityDashboard {
+  id        String   @id @db.Uuid
+  ownerId   String   @map("owner_id") @db.Uuid
+  name      String   @db.VarChar(120)
+  /// Виден всем, у кого есть доступ к журналам; править может только владелец.
+  shared    Boolean  @default(false)
+  /// [{ id, type, title, source, q, field, size }] — проверяется в сервисе.
+  widgets   Json     @default("[]") @db.JsonB
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([ownerId])
+  @@map("security_dashboards")
 }
 
 model AntiFraudEvent {

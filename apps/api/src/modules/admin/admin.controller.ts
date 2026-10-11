@@ -22,6 +22,7 @@ import { CurrentUser } from '@modules/auth/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '@modules/auth/guards/jwt-auth.guard';
 
 import { AdminAuditService } from './admin-audit.service';
+import { AdminRolesService } from './admin-roles.service';
 import { AdminSettingsService } from './admin-settings.service';
 import { AdminUsersService } from './admin-users.service';
 import {
@@ -31,10 +32,12 @@ import {
   BulkIpBlockDto,
   BulkUsersDto,
   CreateIpBlockDto,
+  CreateRoleDto,
   ListAntifraudDto,
   ListUsersDto,
   SearchLogDto,
   SetRolesDto,
+  UpdateRoleDto,
   UpdateSettingDto,
   UpdateUserDto,
 } from './dto/admin.dto';
@@ -46,6 +49,7 @@ import {
 export class AdminController {
   constructor(
     private readonly users: AdminUsersService,
+    private readonly roles: AdminRolesService,
     private readonly settings: AdminSettingsService,
     private readonly audit: AdminAuditService,
     private readonly ipBlocks: IpBlockService,
@@ -145,10 +149,42 @@ export class AdminController {
   }
 
   @Get('roles')
-  @RequirePermissions('roles.read', 'roles.assign')
+  @RequirePermissions('roles.read', 'roles.assign', 'roles.manage')
   @ApiOperation({ summary: 'Роли с правами' })
-  async roles(): Promise<unknown> {
+  async listRoles(): Promise<unknown> {
     return this.users.listRoles();
+  }
+
+  @Get('permissions')
+  @RequirePermissions('roles.read', 'roles.manage')
+  @ApiOperation({ summary: 'Все права системы — из них собираются роли' })
+  async listPermissions(): Promise<unknown> {
+    return this.roles.listPermissions();
+  }
+
+  @Post('roles')
+  @RequirePermissions('roles.manage')
+  @ApiOperation({ summary: 'Создать свою роль из своих прав (уровень ниже своего)' })
+  async createRole(@CurrentUser() actor: AuthenticatedUser, @Body() dto: CreateRoleDto): Promise<unknown> {
+    return this.roles.create(actor, dto);
+  }
+
+  @Patch('roles/:id')
+  @RequirePermissions('roles.manage')
+  @ApiOperation({ summary: 'Изменить свою роль (системные меняет только сид)' })
+  async updateRole(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateRoleDto,
+  ): Promise<unknown> {
+    return this.roles.update(actor, id, dto);
+  }
+
+  @Delete('roles/:id')
+  @RequirePermissions('roles.manage')
+  @ApiOperation({ summary: 'Удалить свою роль; оставшиеся без ролей получают роль пользователя' })
+  async deleteRole(@CurrentUser() actor: AuthenticatedUser, @Param('id', ParseUUIDPipe) id: string): Promise<unknown> {
+    return this.roles.remove(actor, id);
   }
 
   // ------------------------------------------------------------- настройки
@@ -239,7 +275,7 @@ export class AdminController {
   ): Promise<unknown> {
     return this.ipBlocks.createMany(
       dto.values,
-      { reason: dto.reason, expiresInHours: dto.expiresInHours },
+      { reason: dto.reason, expiresInHours: dto.expiresInHours, level: dto.level, ports: dto.ports },
       { id: actor.id, ip: req.ip, rolePriority: actor.rolePriority },
     );
   }

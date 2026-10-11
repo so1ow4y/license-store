@@ -7,6 +7,9 @@ import { z } from 'zod'
 import { has, PERMISSIONS } from '@/lib/auth/permissions'
 import { useSession } from '@/lib/auth/session'
 import { useT } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
+import { ACTIVE_ROW, CURSOR_ROW, PanelFacts, PanelSection, SidePanel } from '@/components/side-panel'
+import { useListHotkeys } from '@/hooks/use-list-hotkeys'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -69,6 +72,7 @@ function AdminOrdersPage() {
   const [skip, setSkip] = useState(0)
   const [confirming, setConfirming] = useState<Order | null>(null)
   const [rejecting, setRejecting] = useState<Order | null>(null)
+  const [openedId, setOpenedId] = useState<string | null>(null)
 
   useEffect(() => setSkip(0), [tab, status, provider, search])
 
@@ -86,11 +90,18 @@ function AdminOrdersPage() {
     )
   )
 
-  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
-
   const items = query.data?.items ?? []
   const total = query.data?.total ?? 0
   const canManage = can(PERMISSIONS.ORDERS_MANAGE)
+  const opened = items.find((o) => o.id === openedId) ?? null
+  const cursor = useListHotkeys({
+    ids: items.map((o) => o.id),
+    openedId,
+    onOpen: setOpenedId,
+    onClose: () => setOpenedId(null),
+  })
+
+  if (isTwoFactorSetupRequired(query.error)) return <TwoFactorSetupRequired />
 
   return (
     <div className='space-y-6'>
@@ -188,6 +199,9 @@ function AdminOrdersPage() {
                     key={order.id}
                     order={order}
                     canManage={canManage}
+                    active={openedId === order.id}
+                    cursor={cursor === order.id}
+                    onOpen={() => setOpenedId(openedId === order.id ? null : order.id)}
                     onConfirm={() => setConfirming(order)}
                     onReject={() => setRejecting(order)}
                   />
@@ -210,18 +224,151 @@ function AdminOrdersPage() {
 
       <ConfirmDialog order={confirming} onClose={() => setConfirming(null)} />
       <RejectDialog order={rejecting} onClose={() => setRejecting(null)} />
+      {opened && (
+        <OrderPanel
+          order={opened}
+          canManage={canManage}
+          onClose={() => setOpenedId(null)}
+          onConfirm={() => setConfirming(opened)}
+          onReject={() => setRejecting(opened)}
+        />
+      )}
     </div>
+  )
+}
+
+/** Заказ в панели справа: всё для сверки оплаты и решение по ней, не уходя из очереди. */
+function OrderPanel({
+  order,
+  canManage,
+  onClose,
+  onConfirm,
+  onReject,
+}: {
+  order: Order
+  canManage: boolean
+  onClose: () => void
+  onConfirm: () => void
+  onReject: () => void
+}) {
+  const t = useT()
+  const payment = order.payment
+  const crypto = payment?.instructions?.kind === 'crypto' ? payment.instructions : null
+  const txLink = explorerLink(crypto?.explorerTxUrl, payment?.externalId)
+  const manual = order.status === 'PENDING' && payment?.provider === 'CRYPTO'
+  const date = (value: string | null | undefined) => (value ? formatDateTime(value) : '—')
+
+  return (
+    <SidePanel
+      open
+      onClose={onClose}
+      title={<span className='font-mono'>{order.number}</span>}
+      subtitle={`${order.product.name} · ${order.plan.name}`}
+      badges={<OrderStatusBadge order={order} />}
+    >
+      {canManage && manual && (
+        <div className='flex flex-wrap gap-2'>
+          <Button onClick={onConfirm}>{t('admin.orders.confirm')}</Button>
+          <Button variant='outline' onClick={onReject}>
+            {t('admin.orders.reject')}
+          </Button>
+        </div>
+      )}
+      {manual && !isAwaitingReview(order) && <p className='text-sm text-amber-600 dark:text-amber-400'>{t('admin.orders.noTx')}</p>}
+
+      <PanelSection title={t('admin.orders.panel.order')}>
+        <PanelFacts
+          rows={[
+            [
+              t('admin.orders.column.buyer'),
+              order.user ? (
+                <Link to='/admin/users' search={{ open: order.user.id }} className='text-primary underline-offset-4 hover:underline'>
+                  {order.user.username}
+                </Link>
+              ) : (
+                '—'
+              ),
+            ],
+            [t('orders.column.amount'), formatPrice(order.amount, order.currency)],
+            [t('orders.column.created'), date(order.createdAt)],
+            [t('admin.orders.panel.paid'), date(order.paidAt)],
+            [t('admin.orders.panel.delivered'), date(order.deliveredAt)],
+            ...(order.cancelledAt ? [[t('admin.orders.panel.cancelled'), date(order.cancelledAt)] as [string, string]] : []),
+            ...(order.comment ? [[t('admin.orders.note'), order.comment] as [string, string]] : []),
+          ]}
+        />
+      </PanelSection>
+
+      {payment && (
+        <PanelSection title={t('admin.orders.column.payment')}>
+          <PanelFacts
+            rows={[
+              [t('admin.orders.panel.provider'), providerLabel(payment.provider)],
+              ...(crypto
+                ? ([
+                    [t('admin.orders.panel.coins'), <span className='font-mono font-semibold'>{`${crypto.amount} ${crypto.currency} · ${crypto.network}`}</span>],
+                    [
+                      t('admin.orders.panel.address'),
+                      <span className='inline-flex items-center gap-1 font-mono text-xs break-all'>
+                        {crypto.address}
+                        <CopyButton value={crypto.address} label={t('admin.orders.panel.address')} />
+                      </span>,
+                    ],
+                  ] as [string, React.ReactNode][])
+                : []),
+              [
+                'TX',
+                payment.externalId ? (
+                  <span className='inline-flex flex-wrap items-center gap-1 font-mono text-xs break-all'>
+                    {payment.externalId}
+                    <CopyButton value={payment.externalId} label='TX' />
+                    {txLink && (
+                      <a href={txLink} target='_blank' rel='noopener noreferrer' className='font-sans underline'>
+                        {t('admin.orders.explorer')}
+                      </a>
+                    )}
+                  </span>
+                ) : (
+                  '—'
+                ),
+              ],
+              [t('admin.orders.panel.submitted'), date(payment.submittedAt)],
+              [t('admin.orders.panel.confirmed'), date(payment.confirmedAt)],
+              ...(payment.errorMessage
+                ? [[t('admin.orders.panel.error'), <span className='text-destructive'>{payment.errorMessage}</span>] as [string, React.ReactNode]]
+                : []),
+            ]}
+          />
+        </PanelSection>
+      )}
+
+      {order.licenseIds.length > 0 && (
+        <PanelSection title={t('admin.orders.panel.licenses')}>
+          <Button asChild size='sm' variant='outline'>
+            <Link to='/admin/licenses' search={{ q: order.licenseIds.map((id) => `id:${id}`).join(' OR ') }}>
+              {t('admin.orders.panel.openLicenses', { count: order.licenseIds.length })}
+            </Link>
+          </Button>
+        </PanelSection>
+      )}
+    </SidePanel>
   )
 }
 
 function OrderRow({
   order,
   canManage,
+  active,
+  cursor,
+  onOpen,
   onConfirm,
   onReject,
 }: {
   order: Order
   canManage: boolean
+  active: boolean
+  cursor: boolean
+  onOpen: () => void
   onConfirm: () => void
   onReject: () => void
 }) {
@@ -232,11 +379,11 @@ function OrderRow({
   const manual = order.status === 'PENDING' && payment?.provider === 'CRYPTO'
 
   return (
-    <TableRow>
+    <TableRow data-row-id={order.id} className={cn('cursor-pointer', active && ACTIVE_ROW, cursor && CURSOR_ROW)} onClick={onOpen}>
       <TableCell className='font-mono text-xs'>{order.number}</TableCell>
-      <TableCell>
+      <TableCell onClick={(e) => e.stopPropagation()}>
         {order.user ? (
-          <Link to='/admin/users/$userId' params={{ userId: order.user.id }} className='underline-offset-4 hover:underline'>
+          <Link to='/admin/users' search={{ open: order.user.id }} className='underline-offset-4 hover:underline'>
             {order.user.username}
           </Link>
         ) : (
@@ -255,7 +402,7 @@ function OrderRow({
           </span>
         )}
       </TableCell>
-      <TableCell className='max-w-56'>
+      <TableCell className='max-w-56' onClick={(e) => e.stopPropagation()}>
         {payment ? providerLabel(payment.provider) : '—'}
         {payment?.externalId && payment.provider === 'CRYPTO' && (
           <span className='flex items-center gap-1 font-mono text-xs text-muted-foreground'>
@@ -275,7 +422,7 @@ function OrderRow({
       </TableCell>
       <TableCell className='whitespace-nowrap text-muted-foreground'>{formatDateTime(order.createdAt)}</TableCell>
       {canManage && (
-        <TableCell className='space-x-2 text-right whitespace-nowrap'>
+        <TableCell className='space-x-2 text-right whitespace-nowrap' onClick={(e) => e.stopPropagation()}>
           {manual && (
             <>
               {/* Без хеша тоже можно: покупатель мог оплатить и не прислать его. */}

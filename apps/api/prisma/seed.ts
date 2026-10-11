@@ -29,6 +29,7 @@ const PERMISSIONS: Array<[slug: string, group: string, description: string]> = [
   ['users.block', 'users', 'Блокировка и разблокировка пользователей'],
   ['roles.read', 'users', 'Просмотр ролей'],
   ['roles.assign', 'users', 'Назначение ролей (только ниже своей)'],
+  ['roles.manage', 'users', 'Создание своих ролей из набора прав (только ниже своей)'],
 
   ['products.manage', 'products', 'Создание и редактирование товаров'],
   ['plans.manage', 'products', 'Управление тарифами'],
@@ -65,6 +66,8 @@ const PERMISSIONS: Array<[slug: string, group: string, description: string]> = [
   ['resellers.topups.confirm', 'resellers', 'Подтверждение и отклонение заявок реселлеров на пополнение баланса'],
   ['reseller.panel', 'resellers', 'Панель реселлера: ключи со своего баланса, свои клиенты'],
 
+  ['launcher.manage', 'products', 'Загрузчик: выпуск версий, кому они доступны, описание страницы загрузки'],
+
   ['settings.read', 'system', 'Просмотр настроек'],
   ['settings.manage', 'system', 'Изменение настроек'],
   ['apikeys.manage', 'system', 'Управление API-ключами загрузчика'],
@@ -73,6 +76,8 @@ const PERMISSIONS: Array<[slug: string, group: string, description: string]> = [
   ['logins.read', 'security', 'Журнал входов'],
   ['security.ips.read', 'security', 'Адреса пользователей и поиск по IP'],
   ['security.ip_block', 'security', 'Блокировка адресов и подсетей'],
+  ['security.rules.manage', 'security', 'Правила корреляции: создание, включение, разбор сработок'],
+  ['security.traffic.manage', 'security', 'Приоритет трафика: доверенные адреса и пользователи, веса ролей, режим атаки'],
 ];
 
 // ---------------------------------------------------------------------------
@@ -106,6 +111,8 @@ const ROLES: Array<{
       'logins.read',
       'security.ips.read',
       'security.ip_block',
+      'security.rules.manage',
+      'security.traffic.manage',
       'licenses.read.any',
       'hwid.history.read',
       'orders.read.any',
@@ -124,6 +131,7 @@ const ROLES: Array<{
       'files.upload',
       'payment_profiles.manage',
       'products.payments.assign',
+      'launcher.manage',
       'licenses.read.any',
       'licenses.build.assign',
       'orders.read.any',
@@ -201,6 +209,38 @@ const SETTINGS: Array<{
   { key: 'security.jwt.refresh_ttl_sec', value: 2592000, category: 'security', description: 'Срок жизни refresh-токена, с' },
   { key: 'security.request_signature.window_sec', value: 300, category: 'security', description: 'Окно защиты от повтора запросов загрузчика, с' },
   { key: 'security.2fa.required_for_admin', value: true, category: 'security', description: '2FA обязательна для администраторов' },
+  // Значение по умолчанию — то же, что в миграции 20261005150000_security_center
+  // и в TRAFFIC_DEFAULTS (traffic-priority.service.ts).
+  {
+    key: 'security.traffic',
+    value: {
+      enabled: true,
+      maxConcurrent: 128,
+      queueMax: 1000,
+      queueTimeoutMs: 8000,
+      bypassWeight: 90,
+      lagThresholdMs: 250,
+      anonymousWeight: 10,
+      authenticatedWeight: 30,
+      roleWeights: { super_admin: 100, security_admin: 95, product_admin: 80, support: 70, reseller: 50 },
+      attackMode: false,
+      attackMinWeight: 50,
+    },
+    category: 'security',
+    description: 'Приоритет трафика: лимит одновременных запросов, очередь по весам, режим атаки',
+  },
+
+  // То же значение, что в миграции 20261005170000_launcher_releases.
+  {
+    key: 'launcher.page',
+    value: {
+      requirements: 'Windows 10 или 11, 64 бита\nСвободно 300 МБ на диске\nСтабильное интернет-соединение',
+      steps:
+        'Скачайте установщик\nЗапустите его и следуйте подсказкам\nВойдите своим логином и паролем от кабинета\nВыберите продукт — загрузчик сам скачает и обновит его',
+    },
+    category: 'launcher',
+    description: 'Страница загрузчика: системные требования и шаги установки',
+  },
 
   { key: 'limits.hwid.reset_cooldown_hours', value: 24, category: 'limits', description: 'Мин. интервал между самостоятельными сбросами, ч' },
   { key: 'limits.hwid.max_total_resets', value: 3, category: 'limits', description: 'Всего самостоятельных сбросов на лицензию' },
@@ -221,6 +261,93 @@ const SETTINGS: Array<{
   { key: 'limits.digiseller.attempts_per_hour', value: 30, category: 'limits', description: 'Попыток активации покупки на пользователя в час' },
   { key: 'limits.digiseller.attempts_per_ip_per_hour', value: 60, category: 'limits', description: 'Попыток активации покупки с одного адреса в час' },
   { key: 'limits.digiseller.attempts_per_source_per_hour', value: 60, category: 'limits', description: 'Попыток активации покупки с одного источника (IP или чат) в час' },
+];
+
+// ---------------------------------------------------------------------------
+//  ПРАВИЛА КОРРЕЛЯЦИИ. Примеры, создаются ВЫКЛЮЧЕННЫМИ и только если правила
+//  с таким названием ещё нет: дальше их правит администратор безопасности,
+//  повторный сид не трогает ни пороги, ни включённость.
+// ---------------------------------------------------------------------------
+const CORRELATION_RULES: Array<{
+  name: string;
+  description: string;
+  source: 'LOGINS' | 'AUDIT';
+  query: string;
+  groupBy: string;
+  distinctField?: string;
+  threshold: number;
+  windowMinutes: number;
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  action: 'ALERT' | 'BLOCK_IP' | 'BLOCK_USER';
+  blockLevel?: 'APP' | 'EDGE' | 'FIREWALL';
+  blockPorts?: number[];
+  blockHours?: number;
+  cooldownMinutes?: number;
+}> = [
+  {
+    name: 'Перебор паролей с одного адреса',
+    description: '20 неудачных входов за 10 минут с одного IP — блок на nginx на сутки.',
+    source: 'LOGINS',
+    query: 'result:failed',
+    groupBy: 'ip',
+    threshold: 20,
+    windowMinutes: 10,
+    severity: 'HIGH',
+    action: 'BLOCK_IP',
+    blockLevel: 'EDGE',
+    blockHours: 24,
+  },
+  {
+    name: 'Подбор учёток по списку (credential stuffing)',
+    description: 'С одного IP за 15 минут пробуют 5+ разных логинов — сброс пакетов на фаерволе по веб-портам на 3 дня.',
+    source: 'LOGINS',
+    query: 'result:failed',
+    groupBy: 'ip',
+    distinctField: 'user',
+    threshold: 5,
+    windowMinutes: 15,
+    severity: 'CRITICAL',
+    action: 'BLOCK_IP',
+    blockLevel: 'FIREWALL',
+    blockPorts: [80, 443],
+    blockHours: 72,
+  },
+  {
+    name: 'Атака на одну учётку с разных адресов',
+    description: 'Неудачные входы в один аккаунт с 5+ адресов за 30 минут — распределённый перебор.',
+    source: 'LOGINS',
+    query: 'result:failed',
+    groupBy: 'user',
+    distinctField: 'ip',
+    threshold: 5,
+    windowMinutes: 30,
+    severity: 'HIGH',
+    action: 'ALERT',
+  },
+  {
+    name: 'Входы из нескольких стран за сутки',
+    description: 'Успешные входы в один аккаунт из 3+ стран за 24 часа — похоже на передачу учётки.',
+    source: 'LOGINS',
+    query: 'result:success',
+    groupBy: 'user',
+    distinctField: 'country',
+    threshold: 3,
+    windowMinutes: 1440,
+    severity: 'MEDIUM',
+    action: 'ALERT',
+    cooldownMinutes: 720,
+  },
+  {
+    name: 'Массовые блокировки пользователей',
+    description: 'Один сотрудник заблокировал 20+ аккаунтов за 10 минут — проверить, не скомпрометирован ли он.',
+    source: 'AUDIT',
+    query: 'action:user.block',
+    groupBy: 'actor',
+    threshold: 20,
+    windowMinutes: 10,
+    severity: 'HIGH',
+    action: 'ALERT',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -471,6 +598,15 @@ async function main() {
         isSecret: s.isSecret ?? false,
         description: s.description,
       },
+    });
+  }
+
+  console.log(`· correlation rules (${CORRELATION_RULES.length})`);
+  for (const rule of CORRELATION_RULES) {
+    const exists = await prisma.correlationRule.findFirst({ where: { name: rule.name }, select: { id: true } });
+    if (exists) continue;
+    await prisma.correlationRule.create({
+      data: { id: uuidv7(), enabled: false, ...rule, distinctField: rule.distinctField ?? null, blockHours: rule.blockHours ?? null },
     });
   }
 

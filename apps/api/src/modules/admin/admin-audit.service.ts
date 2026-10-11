@@ -4,7 +4,7 @@ import { AntiFraudSeverity, AntiFraudType, Prisma } from '@prisma/client';
 import { PrismaService } from '@common/prisma/prisma.service';
 import {
   anyContains,
-  histogramInterval,
+  histogramStep,
   ipMatch,
   queryCondition,
   textMatch,
@@ -52,6 +52,45 @@ const LOGIN_FACETS: Facet[] = [
   { field: 'method', expr: raw('l.method') },
 ];
 
+/**
+ * Поля, по которым правило корреляции группирует события и считает разные
+ * значения. Подпись — то, что видит администратор, выражение — фиксированный SQL.
+ */
+export const CORRELATION_FIELDS = {
+  LOGINS: {
+    ip: 'host(l.ip)',
+    user: 'COALESCE(u.username::text, l.identifier_used)',
+    country: 'l.country',
+    method: 'l.method',
+    reason: 'l.failure_reason',
+  },
+  AUDIT: {
+    ip: 'host(a.ip)',
+    actor: 'COALESCE(u.username::text, a.actor_label)',
+    action: 'a.action',
+    entity: 'a.entity_type',
+  },
+} as const;
+
+export interface CorrelationQuery {
+  source: keyof typeof CORRELATION_FIELDS;
+  q: string;
+  groupBy: string;
+  distinctField?: string | null;
+  threshold: number;
+  from: Date;
+  to: Date;
+  limit?: number;
+}
+
+export interface CorrelationGroup {
+  key: string;
+  count: number;
+  distinctCount: number | null;
+  firstEventAt: Date;
+  lastEventAt: Date;
+}
+
 @Injectable()
 export class AdminAuditService {
   constructor(private readonly prisma: PrismaService) {}
@@ -81,16 +120,17 @@ export class AdminAuditService {
 
   async auditStats(input: SearchInput) {
     const conditions = this.auditConditions(input);
+    const step = histogramStep(input.from, input.to);
     const from = sql`FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id`;
     const [histogram, facets] = await Promise.all([
       this.prisma.$queryRaw<unknown[]>(sql`
-        SELECT date_bin(${histogramInterval(input.from, input.to)}::interval, a.created_at, TIMESTAMPTZ '2000-01-01') AS bucket,
+        SELECT date_bin(${step.interval}::interval, a.created_at, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS bucket,
                count(*)::int AS count
         ${from} ${whereClause(conditions)}
         GROUP BY 1 ORDER BY 1 DESC LIMIT 200`),
       this.facets(from, conditions, AUDIT_FACETS),
     ]);
-    return { interval: histogramInterval(input.from, input.to), histogram: histogram.reverse(), facets };
+    return { ...step, histogram: histogram.reverse(), facets };
   }
 
   private auditConditions(input: SearchInput): (Prisma.Sql | null)[] {
@@ -148,16 +188,17 @@ export class AdminAuditService {
 
   async loginStats(input: SearchInput) {
     const conditions = this.loginConditions(input);
+    const step = histogramStep(input.from, input.to);
     const from = sql`FROM login_history l LEFT JOIN users u ON u.id = l.user_id`;
     const [histogram, facets] = await Promise.all([
       this.prisma.$queryRaw<unknown[]>(sql`
-        SELECT date_bin(${histogramInterval(input.from, input.to)}::interval, l.created_at, TIMESTAMPTZ '2000-01-01') AS bucket,
+        SELECT date_bin(${step.interval}::interval, l.created_at, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS bucket,
                count(*)::int AS count, count(*) FILTER (WHERE NOT l.success)::int AS failed
         ${from} ${whereClause(conditions)}
         GROUP BY 1 ORDER BY 1 DESC LIMIT 200`),
       this.facets(from, conditions, LOGIN_FACETS),
     ]);
-    return { interval: histogramInterval(input.from, input.to), histogram: histogram.reverse(), facets };
+    return { ...step, histogram: histogram.reverse(), facets };
   }
 
   private loginConditions(input: SearchInput): (Prisma.Sql | null)[] {
@@ -204,6 +245,54 @@ export class AdminAuditService {
       this.prisma.antiFraudEvent.count({ where }),
     ]);
     return { items, total, skip: filters.skip ?? 0, take };
+  }
+
+  // ------------------------------------------------------------ корреляция
+
+  /**
+   * Группы событий, перешедшие порог: «N событий по запросу за окно» или
+   * «N разных значений поля». Строка поиска — тот же язык, что в
+   * обозревателе, поэтому правило можно сначала отладить там.
+   */
+  async correlate(input: CorrelationQuery): Promise<CorrelationGroup[]> {
+    const { group, distinct, from, createdAt, conditions } = this.correlationParts(input);
+    const measure = distinct ? sql`count(DISTINCT ${distinct})` : sql`count(*)`;
+    return this.prisma.$queryRaw<CorrelationGroup[]>(sql`
+      SELECT ${group} AS "key", count(*)::int AS "count",
+             ${distinct ? sql`count(DISTINCT ${distinct})::int` : sql`NULL::int`} AS "distinctCount",
+             min(${createdAt}) AS "firstEventAt", max(${createdAt}) AS "lastEventAt"
+      ${from} ${whereClause([...conditions, sql`${group} IS NOT NULL`])}
+      GROUP BY 1
+      HAVING ${measure} >= ${input.threshold}
+      ORDER BY ${measure} DESC, 1
+      LIMIT ${Math.min(input.limit ?? 100, 500)}`);
+  }
+
+  /** Что стояло за сработкой: топ значений по остальным полям внутри одной группы. */
+  async correlationSample(input: Omit<CorrelationQuery, 'threshold' | 'limit'> & { key: string }) {
+    const { group, from, conditions } = this.correlationParts(input);
+    const facets = (input.source === 'LOGINS' ? LOGIN_FACETS : AUDIT_FACETS).filter((f) => f.field !== input.groupBy);
+    return this.facets(from, [...conditions, sql`${group} = ${input.key}`], facets);
+  }
+
+  private correlationParts(input: Omit<CorrelationQuery, 'threshold' | 'limit'>) {
+    const fields: Record<string, string> = CORRELATION_FIELDS[input.source];
+    const groupExpr = fields[input.groupBy];
+    const distinctExpr = input.distinctField ? fields[input.distinctField] : undefined;
+    if (!groupExpr || (input.distinctField && !distinctExpr)) {
+      throw new BadRequestException({ code: 'CORRELATION_FIELD_INVALID', message: 'Поле группировки недоступно для этого журнала' });
+    }
+    const logins = input.source === 'LOGINS';
+    const range = { q: input.q, from: input.from, to: input.to };
+    return {
+      group: raw(groupExpr),
+      distinct: distinctExpr ? raw(distinctExpr) : null,
+      createdAt: raw(logins ? 'l.created_at' : 'a.created_at'),
+      from: logins
+        ? sql`FROM login_history l LEFT JOIN users u ON u.id = l.user_id`
+        : sql`FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id`,
+      conditions: logins ? this.loginConditions(range) : this.auditConditions(range),
+    };
   }
 
   // ------------------------------------------------------------- внутреннее

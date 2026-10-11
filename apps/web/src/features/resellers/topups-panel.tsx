@@ -9,7 +9,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CopyButton } from '@/components/copy-button'
 import { AdminErrorText, adminErrorMessage } from '@/features/admin/error-text'
@@ -23,6 +31,7 @@ import {
   useSubmitTopupTx,
   type ResellerTopup,
   type TopupStatus,
+  type TopupWallet,
 } from './api'
 import { TransactionsTable } from './transactions-table'
 
@@ -96,18 +105,7 @@ export function TopupsPanel({ disabled }: { disabled: boolean }) {
                 </div>
                 <div className='space-y-2'>
                   <Label>{t('resellers.topup.wallet')}</Label>
-                  <Select value={walletId} onValueChange={setWalletId} disabled={disabled}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={t('resellers.topup.walletPlaceholder')} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {wallets.map((w) => (
-                        <SelectItem key={w.id} value={w.id}>
-                          {w.currency} · {w.network}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <WalletSelect wallets={wallets} value={walletId} onChange={setWalletId} disabled={disabled} />
                 </div>
                 <div className='space-y-2'>
                   <Label htmlFor='tp-note'>{t('resellers.topup.note')}</Label>
@@ -146,6 +144,68 @@ export function TopupsPanel({ disabled }: { disabled: boolean }) {
         <TransactionsTable />
       </section>
     </div>
+  )
+}
+
+/**
+ * Выбор кошелька: кошельки сгруппированы по реквизитам (у двух реквизитов
+ * может быть одинаковый USDT · TRC20), монета — отдельной меткой. В закрытом
+ * поле видно и реквизиты, и монету.
+ */
+function WalletSelect({
+  wallets,
+  value,
+  onChange,
+  disabled,
+}: {
+  wallets: TopupWallet[]
+  value: string
+  onChange: (value: string) => void
+  disabled: boolean
+}) {
+  const t = useT()
+  const groups = new Map<string, { name: string; wallets: TopupWallet[] }>()
+  for (const w of wallets) {
+    const group = groups.get(w.profileId) ?? { name: w.profileName, wallets: [] }
+    group.wallets.push(w)
+    groups.set(w.profileId, group)
+  }
+  const selected = wallets.find((w) => w.id === value)
+
+  return (
+    <Select value={value} onValueChange={onChange} disabled={disabled}>
+      <SelectTrigger className='w-full min-w-56'>
+        <SelectValue placeholder={t('resellers.topup.walletPlaceholder')}>
+          {selected && (
+            <span className='flex min-w-0 items-center gap-2'>
+              <Coin wallet={selected} />
+              <span className='truncate text-muted-foreground'>{selected.profileName}</span>
+            </span>
+          )}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {[...groups.entries()].map(([profileId, group]) => (
+          <SelectGroup key={profileId}>
+            <SelectLabel className='font-medium text-foreground'>{group.name}</SelectLabel>
+            {group.wallets.map((w) => (
+              <SelectItem key={w.id} value={w.id} className='ps-4'>
+                <Coin wallet={w} />
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+function Coin({ wallet }: { wallet: TopupWallet }) {
+  return (
+    <span className='flex items-center gap-1.5'>
+      <span className='rounded-md bg-primary/15 px-1.5 py-0.5 font-mono text-xs font-semibold text-primary'>{wallet.currency}</span>
+      <span className='text-xs text-muted-foreground'>{wallet.network}</span>
+    </span>
   )
 }
 

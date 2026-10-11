@@ -116,6 +116,17 @@ export class ListProfilesDto {
   @IsOptional()
   @IsUUID()
   productId?: string;
+
+  @ApiPropertyOptional({ enum: ['PRODUCTS', 'RESELLERS'], default: 'PRODUCTS' })
+  @IsOptional()
+  @IsIn(['PRODUCTS', 'RESELLERS'])
+  scope?: 'PRODUCTS' | 'RESELLERS';
+}
+
+export class MoveProfileDto {
+  @ApiProperty({ enum: ['PRODUCTS', 'RESELLERS'], description: 'Куда перенести реквизиты' })
+  @IsIn(['PRODUCTS', 'RESELLERS'])
+  scope!: 'PRODUCTS' | 'RESELLERS';
 }
 
 export class CreateProfileDto {
@@ -127,6 +138,11 @@ export class CreateProfileDto {
   @IsString()
   @Length(1, 128)
   name!: string;
+
+  @ApiPropertyOptional({ enum: ['PRODUCTS', 'RESELLERS'], default: 'PRODUCTS', description: 'Раздел: товары или реселлеры' })
+  @IsOptional()
+  @IsIn(['PRODUCTS', 'RESELLERS'])
+  scope?: 'PRODUCTS' | 'RESELLERS';
 
   @ApiPropertyOptional({ description: 'Личные реквизиты товара; без поля — шаблон', nullable: true })
   @IsOptional()
@@ -178,6 +194,11 @@ export class SearchProfilesDto {
   @IsOptional()
   @IsIn(['TEMPLATE', 'PERSONAL'])
   kind?: 'TEMPLATE' | 'PERSONAL';
+
+  @ApiPropertyOptional({ enum: ['PRODUCTS', 'RESELLERS'] })
+  @IsOptional()
+  @IsIn(['PRODUCTS', 'RESELLERS'])
+  scope?: 'PRODUCTS' | 'RESELLERS';
 
   @ApiPropertyOptional({ type: String, format: 'date-time', description: 'Созданы не раньше' })
   @IsOptional()

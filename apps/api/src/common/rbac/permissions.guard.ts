@@ -11,7 +11,7 @@ import { PERMISSIONS_KEY } from './permissions.decorator';
  * пользователь (10) под требование 2FA не попадает — у него нет доступа к
  * чужим данным.
  */
-const PRIVILEGED_ROLE_PRIORITY = 60;
+export const PRIVILEGED_ROLE_PRIORITY = 60;
 
 /**
  * Проверка прав.

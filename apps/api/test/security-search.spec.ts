@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { Prisma } from '@prisma/client';
 
-import { compileQuery, likePattern, parseQuery } from '../src/common/search/query';
+import { compileQuery, histogramStep, likePattern, parseQuery } from '../src/common/search/query';
 import { cidrContains, normalizeIp, parseCidr } from '../src/common/security/ip';
 import { IpBlockService } from '../src/common/security/ip-block.service';
 import type { AuditService } from '../src/common/audit/audit.service';
@@ -67,6 +67,28 @@ describe('parseQuery', () => {
   });
 });
 
+describe('histogramStep', () => {
+  const at = (iso: string) => new Date(iso);
+
+  it('дробит узкий диапазон до минут', () => {
+    expect(histogramStep(at('2026-10-05T10:00:00Z'), at('2026-10-05T10:15:00Z'))).toEqual({ interval: '1 minute', intervalMs: 60_000 });
+    expect(histogramStep(at('2026-10-05T10:00:00Z'), at('2026-10-05T14:00:00Z')).interval).toBe('5 minutes');
+  });
+
+  it('держит число столбиков около сотни', () => {
+    const from = at('2026-09-05T00:00:00Z');
+    const to = at('2026-10-05T00:00:00Z');
+    const { intervalMs } = histogramStep(from, to);
+    expect((to.getTime() - from.getTime()) / intervalMs).toBeLessThanOrEqual(90);
+    expect(histogramStep(from, to).interval).toBe('12 hours');
+  });
+
+  it('без начала — шаг в день, очень длинный — неделя', () => {
+    expect(histogramStep().interval).toBe('1 day');
+    expect(histogramStep(at('2024-01-01T00:00:00Z'), at('2026-01-01T00:00:00Z')).interval).toBe('7 days');
+  });
+});
+
 describe('IP и подсети', () => {
   it('разворачивает IPv4 внутри IPv6', () => {
     expect(normalizeIp('::ffff:203.0.113.7')).toBe('203.0.113.7');
@@ -89,13 +111,13 @@ describe('IP и подсети', () => {
 });
 
 describe('IpBlockService', () => {
-  function makeService(rows: Array<{ cidr: string }>, privileged: Array<{ username: string }> = []) {
+  function makeService(rows: Array<{ cidr: string; ports: number[] }>, privileged: Array<{ username: string }> = []) {
     const prisma = {
       $queryRaw: vi.fn(async () => privileged),
       ipBlock: {
         findMany: vi.fn(async () => rows),
-        upsert: vi.fn(async ({ create }: { create: { id: string; cidr: string } }) => {
-          rows.push({ cidr: create.cidr });
+        upsert: vi.fn(async ({ create }: { create: { id: string; cidr: string; ports: number[] } }) => {
+          rows.push({ cidr: create.cidr, ports: create.ports });
           return create;
         }),
       },
@@ -105,7 +127,7 @@ describe('IpBlockService', () => {
   }
 
   it('блокирует адреса из подсети и пропускает остальные', async () => {
-    const service = makeService([{ cidr: '198.51.100.0/24' }]);
+    const service = makeService([{ cidr: '198.51.100.0/24', ports: [] }]);
     expect(await service.isBlocked('198.51.100.20')).toBe(true);
     expect(await service.isBlocked('::ffff:198.51.100.20')).toBe(true);
     expect(await service.isBlocked('198.51.101.1')).toBe(false);
@@ -134,5 +156,20 @@ describe('IpBlockService', () => {
     expect(await service.isBlocked('192.0.2.5')).toBe(false);
     await service.create({ value: '192.0.2.5', reason: 'перебор' }, { id: 'a', ip: '198.51.100.1' });
     expect(await service.isBlocked('192.0.2.5')).toBe(true);
+  });
+  it('блок фаервола только по SSH не закрывает сайт, по 443 — закрывает', async () => {
+    const service = makeService([
+      { cidr: '198.51.100.7/32', ports: [22] },
+      { cidr: '198.51.100.8/32', ports: [22, 443] },
+    ]);
+    expect(await service.isBlocked('198.51.100.7')).toBe(false);
+    expect(await service.isBlocked('198.51.100.8')).toBe(true);
+  });
+
+  it('петлю заблокировать нельзя', async () => {
+    const service = makeService([]);
+    await expect(service.create({ value: '127.0.0.1' }, { id: 'a' })).rejects.toMatchObject({
+      response: { code: 'IP_BLOCK_LOOPBACK' },
+    });
   });
 });

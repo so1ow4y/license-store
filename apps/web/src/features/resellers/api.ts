@@ -1,6 +1,8 @@
 import { keepPreviousData, queryOptions, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api/client'
 import { queryClient } from '@/lib/api/query-client'
+import { SESSION_QUERY_KEY } from '@/lib/auth/session'
+import type { PaymentProfile } from '@/features/admin-payments/api'
 
 /**
  * Реселлеры (`resellers.controller.ts`): панель самого реселлера (`/reseller`)
@@ -231,11 +233,13 @@ export type AdminTopup = ResellerTopup & {
   reseller: { id: string; displayName: string; user: { username: string } }
 }
 
+/** Кошелёк для пополнения: монета, сеть и реквизиты, к которым он относится. */
+export type TopupWallet = { id: string; currency: string; network: string; profileId: string; profileName: string }
+
 export const topupOptionsQueryOptions = () =>
   queryOptions({
     queryKey: ['reseller', 'topups', 'options'],
-    queryFn: () =>
-      apiFetch<{ currency: string; wallets: { id: string; currency: string; network: string }[] }>('/reseller/topups/options'),
+    queryFn: () => apiFetch<{ currency: string; wallets: TopupWallet[] }>('/reseller/topups/options'),
   })
 
 export const myTopupsQueryOptions = (page: { skip: number; take: number }) =>
@@ -270,7 +274,7 @@ export function useCancelTopup() {
 
 export type TopupFilter = 'SUBMITTED' | 'OPEN' | 'CONFIRMED' | 'REJECTED' | 'CANCELLED' | 'ALL'
 
-export const adminTopupsQueryOptions = (filters: { status: TopupFilter; skip: number; take: number }) =>
+export const adminTopupsQueryOptions = (filters: { status: TopupFilter; skip: number; take: number; resellerId?: string }) =>
   queryOptions({
     queryKey: ['admin', 'resellers', 'topups', filters],
     queryFn: ({ signal }) =>
@@ -306,6 +310,30 @@ export const adminResellersQueryOptions = (filters: { search?: string; status?: 
     placeholderData: keepPreviousData,
   })
 
+export const adminResellerQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: ['admin', 'resellers', 'one', id],
+    queryFn: () => apiFetch<AdminReseller>(`/admin/resellers/${enc(id)}`),
+  })
+
+/** Кандидат в реселлеры для подсказки в форме. */
+export type ResellerCandidate = {
+  id: string
+  username: string
+  email: string | null
+  status: string
+  isReseller: boolean
+  role: string | null
+}
+
+export const resellerCandidatesQueryOptions = (search: string, page: { skip: number; take: number }) =>
+  queryOptions({
+    queryKey: ['admin', 'resellers', 'candidates', search, page],
+    queryFn: ({ signal }) =>
+      apiFetch<Page<ResellerCandidate>>(`/admin/resellers/candidates?${query({ search, ...page })}`, { signal }),
+    staleTime: 30_000,
+  })
+
 export const adminResellerTransactionsQueryOptions = (id: string, page: { skip: number; take: number }) =>
   queryOptions({
     queryKey: ['admin', 'resellers', id, 'transactions', page],
@@ -333,7 +361,12 @@ export function useCreateReseller() {
   return useMutation({
     mutationFn: (body: ResellerTermsInput & { username: string; displayName: string }) =>
       apiFetch<AdminReseller>('/admin/resellers', { method: 'POST', body }),
-    onSuccess: invalidateAdmin,
+    onSuccess: () => {
+      invalidateAdmin()
+      // Реселлером могли сделать себя — права в сессии (а с ними пункт
+      // «Мои продажи» в меню) должны обновиться сразу, а не после перезахода.
+      void queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY })
+    },
   })
 }
 
@@ -351,4 +384,74 @@ export function useChangeResellerBalance() {
       apiFetch<{ balance: Money }>(`/admin/resellers/${enc(id)}/balance`, { method: 'POST', body }),
     onSuccess: invalidateAdmin,
   })
+}
+
+// ------------------------------------------------- реквизиты реселлера
+
+/** Реквизиты, выданные реселлеру. Пусто — пополнять баланс ему нечем. */
+export type ResellerPaymentOptions = {
+  options: { enabled: boolean; sortOrder: number; profile: PaymentProfile }[]
+}
+
+export const resellerPaymentOptionsQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: ['admin', 'resellers', 'payment-options', id],
+    queryFn: () => apiFetch<ResellerPaymentOptions>(`/admin/resellers/${enc(id)}/payment-options`),
+  })
+
+/** Привязка реквизитов к реселлеру: добавить, включить/выключить, отвязать. */
+export function useResellerPaymentOptionMutations(id: string) {
+  const onSuccess = (data: ResellerPaymentOptions) => {
+    queryClient.setQueryData(resellerPaymentOptionsQueryOptions(id).queryKey, data)
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'payment-profiles'] })
+  }
+  const path = (profileId?: string) =>
+    `/admin/resellers/${enc(id)}/payment-options${profileId ? `/${enc(profileId)}` : ''}`
+  return {
+    attach: useMutation({
+      mutationFn: (profileId: string) => apiFetch<ResellerPaymentOptions>(path(), { method: 'POST', body: { profileId } }),
+      onSuccess,
+    }),
+    update: useMutation({
+      mutationFn: ({ profileId, ...body }: { profileId: string; enabled?: boolean }) =>
+        apiFetch<ResellerPaymentOptions>(path(profileId), { method: 'PATCH', body }),
+      onSuccess,
+    }),
+    detach: useMutation({
+      mutationFn: (profileId: string) => apiFetch<ResellerPaymentOptions>(path(profileId), { method: 'DELETE' }),
+      onSuccess,
+    }),
+  }
+}
+
+/**
+ * Доступ к реквизитам со стороны самих реквизитов: каким реселлерам они
+ * выданы. Те же привязки, что и из карточки реселлера.
+ */
+export function useProfileResellerAccess(profileId: string) {
+  const onSuccess = () => {
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'payment-profiles'] })
+    void queryClient.invalidateQueries({ queryKey: ['admin', 'resellers', 'payment-options'] })
+  }
+  const path = (resellerId: string) =>
+    `/admin/resellers/${enc(resellerId)}/payment-options`
+  return {
+    grant: useMutation({
+      mutationFn: (resellerId: string) => apiFetch<unknown>(path(resellerId), { method: 'POST', body: { profileId } }),
+      onSuccess,
+    }),
+    toggle: useMutation({
+      mutationFn: ({ resellerId, enabled }: { resellerId: string; enabled: boolean }) =>
+        apiFetch<unknown>(`${path(resellerId)}/${enc(profileId)}`, { method: 'PATCH', body: { enabled } }),
+      onSuccess,
+    }),
+    revoke: useMutation({
+      mutationFn: (resellerId: string) => apiFetch<unknown>(`${path(resellerId)}/${enc(profileId)}`, { method: 'DELETE' }),
+      onSuccess,
+    }),
+    grantAll: useMutation({
+      mutationFn: () => apiFetch<unknown>(`/admin/payment-profiles/${enc(profileId)}/resellers/all`, { method: 'POST' }),
+      onSuccess,
+    }),
+  }
 }

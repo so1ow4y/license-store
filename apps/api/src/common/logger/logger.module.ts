@@ -168,7 +168,11 @@ export function maskWebhookSecret(url: string | undefined): string | undefined {
                 // и фильтр не должен от неё зависеть. Точная граница сегмента
                 // (а не startsWith) — чтобы будущий /healthz-report не исчезал
                 // из лога заодно с пробами.
-                return /^\/(?:api\/)?health(?:\/|$)/.test(path);
+                if (/^\/(?:api\/)?health(?:\/|$)/.test(path)) return true;
+                // Краевые агенты (nginx, фаервол) забирают списки каждые
+                // 10 секунд — то же «90% лога», что и пробы. Отказы (401/404)
+                // всё равно видны: их пишет AllExceptionsFilter.
+                return /^\/api\/v\d+\/internal\/edge\//.test(path);
               },
             },
 

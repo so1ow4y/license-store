@@ -84,10 +84,17 @@ export const PROFILE_SECRET_FIELDS: Record<ProfileProvider, string[]> = {
   CRYPTO: [],
 }
 
+/** Раздел реквизитов: оплата товаров покупателями или пополнение баланса реселлерами. */
+export type ProfileScope = 'PRODUCTS' | 'RESELLERS'
+export const PROFILE_SCOPES: ProfileScope[] = ['PRODUCTS', 'RESELLERS']
+/** Реселлеры пополняют баланс только криптой. */
+export const RESELLER_PROVIDERS: ProfileProvider[] = ['CRYPTO']
+
 export type PaymentProfile = {
   id: string
   provider: ProfileProvider
   name: string
+  scope: ProfileScope
   kind: 'TEMPLATE' | 'PERSONAL'
   productId: string | null
   productName: string | null
@@ -99,6 +106,8 @@ export type PaymentProfile = {
   usedBy: number
   /** Товары, к которым привязаны реквизиты. */
   products: { id: string; name: string; slug: string; enabled: boolean }[]
+  /** Реселлеры, которым реквизиты привязаны лично. */
+  resellers: { id: string; displayName: string; enabled: boolean }[]
   createdById: string | null
   createdByUsername: string | null
   createdAt: string
@@ -111,6 +120,7 @@ export const PROFILE_SEARCH_FIELDS = ['name', 'provider', 'kind', 'product', 'cr
 export type ProfileSearch = {
   q?: string
   provider?: ProfileProvider
+  scope?: ProfileScope
   kind?: 'TEMPLATE' | 'PERSONAL'
   from?: string
   to?: string
@@ -125,6 +135,7 @@ export const profilesSearchQueryOptions = (search: ProfileSearch) =>
       const params = new URLSearchParams()
       if (search.q?.trim()) params.set('q', search.q.trim())
       if (search.provider) params.set('provider', search.provider)
+      if (search.scope) params.set('scope', search.scope)
       if (search.kind) params.set('kind', search.kind)
       if (search.from) params.set('from', search.from)
       if (search.to) params.set('to', search.to)
@@ -138,6 +149,7 @@ export const profilesSearchQueryOptions = (search: ProfileSearch) =>
 export type ProfileInput = {
   provider?: ProfileProvider
   name?: string
+  scope?: ProfileScope
   productId?: string | null
   config?: object
   secrets?: Record<string, string>
@@ -151,14 +163,27 @@ export type ProductPaymentOption = {
   options: { enabled: boolean; sortOrder: number; profile: PaymentProfile }[]
 }
 
-export const paymentProfilesQueryOptions = (productId?: string) =>
+export const paymentProfilesQueryOptions = (productId?: string, scope: ProfileScope = 'PRODUCTS') =>
   queryOptions({
-    queryKey: ['admin', 'payment-profiles', productId ?? 'templates'],
-    queryFn: () =>
-      apiFetch<PaymentProfile[]>(
-        `/admin/payment-profiles${productId ? `?productId=${encodeURIComponent(productId)}` : ''}`
-      ),
+    queryKey: ['admin', 'payment-profiles', scope, productId ?? 'templates'],
+    queryFn: () => {
+      const params = new URLSearchParams({ scope })
+      if (productId) params.set('productId', productId)
+      return apiFetch<PaymentProfile[]>(`/admin/payment-profiles?${params}`)
+    },
   })
+
+/** Перенести реквизиты в другой раздел: привязки прежнего раздела снимаются. */
+export function useMoveProfile() {
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: ProfileScope }) =>
+      apiFetch<PaymentProfile>(`/admin/payment-profiles/${encodeURIComponent(id)}/move`, { method: 'POST', body: { scope } }),
+    onSuccess: () => {
+      invalidateProfiles()
+      void queryClient.invalidateQueries({ queryKey: ['admin', 'resellers', 'payment-options'] })
+    },
+  })
+}
 
 export const productPaymentOptionsQueryOptions = (productId: string) =>
   queryOptions({
